@@ -1,0 +1,5 @@
+test*
+validate*
+*results
+__pycache__
+output/*
