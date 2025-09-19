@@ -206,9 +206,9 @@ def main():
         image_path=image_path,
         message=message,
         threshold=2,
-        s=6,
+        s=1,
         local_algorithm='lzma',
-        global_algorithm='zlib'
+        global_algorithm='gdcm'
     )
     
     print(f"\n🎉 Processo de codificação finalizado!")

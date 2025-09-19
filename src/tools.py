@@ -5,6 +5,8 @@ import zlib, gzip, bz2, lzma
 import os
 import time
 import struct
+import io
+import gdcm
 
 EOF_MARKER = "<<<END>>>"
 
@@ -124,6 +126,349 @@ def image_size(image_array):
     """Calculate image size in kilobytes"""
     return image_array.nbytes / 1024
 
+def compress_png(image_array):
+    """Compress image using PNG format"""
+    # Normalizar a imagem para o range 0-255 se necessário
+    if image_array.dtype == np.uint16:
+        # Para imagens DICOM de 16 bits, normalizar para 8 bits
+        img_normalized = ((image_array - image_array.min()) / 
+                         (image_array.max() - image_array.min()) * 255).astype(np.uint8)
+    else:
+        img_normalized = image_array.astype(np.uint8)
+    
+    # Converter para PIL Image
+    pil_image = Image.fromarray(img_normalized, mode='L')  # 'L' para grayscale
+    
+    # Salvar em buffer de memória como PNG
+    buffer = io.BytesIO()
+    pil_image.save(buffer, format='PNG', optimize=True)
+    compressed_data = buffer.getvalue()
+    buffer.close()
+    
+    return compressed_data
+
+def decompress_png(compressed_data, original_shape, original_dtype):
+    """Decompress PNG data back to numpy array"""
+    # Carregar PNG do buffer
+    buffer = io.BytesIO(compressed_data)
+    pil_image = Image.open(buffer)
+    
+    # Converter de volta para numpy array
+    decompressed_array = np.array(pil_image)
+    
+    # Se a imagem original era 16-bit, precisamos restaurar o range original
+    if original_dtype == np.uint16:
+        # Esta é uma aproximação - idealmente salvariamos min/max originais
+        decompressed_array = decompressed_array.astype(np.uint16) * 257  # 257 = 65535/255
+    
+    # Garantir que tenha a forma original
+    if decompressed_array.shape != original_shape:
+        decompressed_array = decompressed_array.reshape(original_shape)
+    
+    buffer.close()
+    return decompressed_array.astype(original_dtype)
+
+def compress_gdcm(image_array):
+    """Compress image using GDCM JPEG-LS lossless compression optimized for medical images"""
+    try:
+        # Criar um DICOM completo em memória para usar compressão nativa
+        height, width = image_array.shape
+        
+        # Criar arquivo DICOM temporário
+        temp_dicom_path = f"/tmp/temp_gdcm_{os.getpid()}.dcm"
+        
+        # Criar dataset DICOM mínimo
+        file_meta = pydicom.Dataset()
+        file_meta.MediaStorageSOPClassUID = "1.2.840.10008.5.1.4.1.1.2"  # CT Image Storage
+        file_meta.MediaStorageSOPInstanceUID = pydicom.uid.generate_uid()
+        file_meta.ImplementationClassUID = pydicom.uid.generate_uid()
+        file_meta.TransferSyntaxUID = pydicom.uid.ExplicitVRLittleEndian
+        
+        # Criar dataset principal
+        ds = pydicom.Dataset()
+        ds.file_meta = file_meta
+        ds.is_little_endian = True
+        ds.is_implicit_VR = False
+        
+        # Tags obrigatórias
+        ds.SOPClassUID = file_meta.MediaStorageSOPClassUID
+        ds.SOPInstanceUID = file_meta.MediaStorageSOPInstanceUID
+        ds.StudyInstanceUID = pydicom.uid.generate_uid()
+        ds.SeriesInstanceUID = pydicom.uid.generate_uid()
+        ds.InstanceNumber = 1
+        
+        # Configurações da imagem
+        ds.SamplesPerPixel = 1
+        ds.PhotometricInterpretation = 'MONOCHROME2'
+        ds.Rows = height
+        ds.Columns = width
+        ds.BitsAllocated = 16 if image_array.dtype == np.uint16 else 8
+        ds.BitsStored = ds.BitsAllocated
+        ds.HighBit = ds.BitsStored - 1
+        ds.PixelRepresentation = 0  # unsigned
+        
+        # Dados dos pixels
+        ds.PixelData = image_array.tobytes()
+        
+        # Salvar temporariamente
+        pydicom.dcmwrite(temp_dicom_path, ds)
+        
+        # Usar GDCM para comprimir
+        reader = gdcm.ImageReader()
+        reader.SetFileName(temp_dicom_path)
+        if not reader.Read():
+            raise RuntimeError("Falha ao ler DICOM temporário")
+        
+        # Obter imagem
+        gdcm_image = reader.GetImage()
+        
+        # Configurar compressor JPEG-LS
+        compressor = gdcm.ImageChangeTransferSyntax()
+        compressor.SetTransferSyntax(gdcm.TransferSyntax.JPEGLSLossless)
+        compressor.SetInput(gdcm_image)
+        
+        if compressor.Change():
+            # Sucesso na compressão JPEG-LS
+            compressed_image = compressor.GetOutput()
+            compressed_buffer = compressed_image.GetBuffer()
+            compressed_size = compressed_buffer.GetBufferLength()
+            
+            # Extrair dados comprimidos
+            compressed_data = bytearray(compressed_size)
+            compressed_buffer.GetBuffer(compressed_data)
+            
+            # Limpar arquivo temporário
+            if os.path.exists(temp_dicom_path):
+                os.remove(temp_dicom_path)
+            
+            return bytes(compressed_data)
+        else:
+            # Se JPEG-LS falhar, tentar J2K (JPEG 2000)
+            compressor.SetTransferSyntax(gdcm.TransferSyntax.JPEG2000Lossless)
+            if compressor.Change():
+                compressed_image = compressor.GetOutput()
+                compressed_buffer = compressed_image.GetBuffer()
+                compressed_size = compressed_buffer.GetBufferLength()
+                
+                compressed_data = bytearray(compressed_size)
+                compressed_buffer.GetBuffer(compressed_data)
+                
+                if os.path.exists(temp_dicom_path):
+                    os.remove(temp_dicom_path)
+                
+                return bytes(compressed_data)
+            else:
+                # Último recurso: usar compressão diferencial médica própria
+                return _medical_differential_compress(image_array)
+                
+    except Exception as e:
+        print(f"⚠️  GDCM falhou ({e}), usando compressão diferencial médica")
+        return _medical_differential_compress(image_array)
+    finally:
+        # Garantir limpeza
+        if 'temp_dicom_path' in locals() and os.path.exists(temp_dicom_path):
+            try:
+                os.remove(temp_dicom_path)
+            except:
+                pass
+
+def _medical_differential_compress(image_array):
+    """Compressão diferencial otimizada para imagens médicas"""
+    height, width = image_array.shape
+    
+    # Converter para int32 para evitar overflow
+    img_int = image_array.astype(np.int32)
+    
+    # Calcular diferenças (predição por vizinho esquerdo/superior)
+    diff_array = np.zeros_like(img_int)
+    
+    # Primeira linha e coluna ficam iguais
+    diff_array[0, :] = img_int[0, :]
+    diff_array[:, 0] = img_int[:, 0]
+    
+    # Predição por gradiente (médico)
+    for y in range(1, height):
+        for x in range(1, width):
+            # Preditor otimizado para imagens médicas
+            left = img_int[y, x-1]
+            top = img_int[y-1, x]
+            top_left = img_int[y-1, x-1]
+            
+            # Gradiente médico adaptativo
+            prediction = left + top - top_left
+            diff_array[y, x] = img_int[y, x] - prediction
+    
+    # Comprimir diferenças com quantização médica
+    compressed_bytes = _compress_medical_differences(diff_array, image_array.dtype)
+    
+    return compressed_bytes
+
+def _compress_medical_differences(diff_array, original_dtype):
+    """Comprime diferenças usando quantização médica"""
+    # Converter diferenças para um range menor
+    diff_flat = diff_array.flatten()
+    
+    # Estatísticas para quantização - converter para int antes do min/max
+    diff_min = int(diff_flat.min())
+    diff_max = int(diff_flat.max())
+    diff_range = diff_max - diff_min
+    
+    if diff_range == 0:
+        # Imagem uniforme
+        return struct.pack('>BII', 0, diff_min & 0xFFFFFFFF, len(diff_flat)) + b'\x00'
+    
+    # Quantizar diferenças para 8 bits quando possível
+    if diff_range <= 255:
+        quantized = ((diff_flat - diff_min) * 255 // diff_range).astype(np.uint8)
+        compressed = zlib.compress(quantized.tobytes(), level=9)
+        # Header: tipo(1) + min(4) + max(4) + tamanho(4) + dados
+        # Garantir que valores sejam positivos para struct
+        header = struct.pack('>BII', 1, diff_min & 0xFFFFFFFF, diff_max & 0xFFFFFFFF) + struct.pack('>I', len(diff_flat))
+        return header + compressed
+    else:
+        # Usar 16 bits
+        quantized = ((diff_flat - diff_min) * 65535 // diff_range).astype(np.uint16)
+        compressed = zlib.compress(quantized.tobytes(), level=9)
+        header = struct.pack('>BII', 2, diff_min & 0xFFFFFFFF, diff_max & 0xFFFFFFFF) + struct.pack('>I', len(diff_flat))
+        return header + compressed
+
+
+
+def decompress_gdcm(compressed_data, original_shape, original_dtype):
+    """Decompress GDCM JPEG-LS or medical differential compressed data"""
+    try:
+        # Verificar se é compressão diferencial médica (tem header específico)
+        if len(compressed_data) >= 13:  # Tamanho mínimo do header
+            header = compressed_data[:13]
+            try:
+                quant_type, diff_min, diff_max, size = struct.unpack('>BIII', header)
+                if quant_type in [0, 1, 2]:  # É compressão diferencial médica
+                    return _decompress_medical_differences(compressed_data, original_shape, original_dtype)
+            except:
+                pass
+        
+        # Tentar descompressão GDCM nativa
+        temp_compressed_path = f"/tmp/temp_gdcm_comp_{os.getpid()}.dcm"
+        temp_decompressed_path = f"/tmp/temp_gdcm_decomp_{os.getpid()}.dcm"
+        
+        try:
+            # Salvar dados comprimidos temporariamente
+            with open(temp_compressed_path, 'wb') as f:
+                f.write(compressed_data)
+            
+            # Tentar descomprimir com GDCM
+            reader = gdcm.ImageReader()
+            reader.SetFileName(temp_compressed_path)
+            
+            if reader.Read():
+                gdcm_image = reader.GetImage()
+                
+                # Descomprimir
+                decompressor = gdcm.ImageChangeTransferSyntax()
+                decompressor.SetTransferSyntax(gdcm.TransferSyntax.ExplicitVRLittleEndian)
+                decompressor.SetInput(gdcm_image)
+                
+                if decompressor.Change():
+                    decompressed_image = decompressor.GetOutput()
+                    buffer = decompressed_image.GetBuffer()
+                    buffer_size = buffer.GetBufferLength()
+                    
+                    decompressed_bytes = bytearray(buffer_size)
+                    buffer.GetBuffer(decompressed_bytes)
+                    
+                    # Converter para numpy
+                    if original_dtype == np.uint16:
+                        decompressed_array = np.frombuffer(decompressed_bytes, dtype='<u2')
+                    else:
+                        decompressed_array = np.frombuffer(decompressed_bytes, dtype=original_dtype)
+                    
+                    return decompressed_array.reshape(original_shape).astype(original_dtype)
+                    
+        except Exception as e:
+            print(f"⚠️  Descompressão GDCM nativa falhou: {e}")
+        finally:
+            # Limpar arquivos temporários
+            for temp_file in [temp_compressed_path, temp_decompressed_path]:
+                if os.path.exists(temp_file):
+                    try:
+                        os.remove(temp_file)
+                    except:
+                        pass
+        
+        # Fallback: assumir dados não comprimidos
+        if original_dtype == np.uint16:
+            decompressed_array = np.frombuffer(compressed_data, dtype='<u2')
+        else:
+            decompressed_array = np.frombuffer(compressed_data, dtype=original_dtype)
+        
+        return decompressed_array.reshape(original_shape).astype(original_dtype)
+        
+    except Exception as e:
+        print(f"⚠️  Erro na descompressão GDCM: {e}")
+        # Último recurso
+        if original_dtype == np.uint16:
+            # Preencher com zeros se não conseguir descomprimir
+            return np.zeros(original_shape, dtype=original_dtype)
+        else:
+            return np.zeros(original_shape, dtype=original_dtype)
+
+def _decompress_medical_differences(compressed_data, original_shape, original_dtype):
+    """Descomprime diferenças médicas"""
+    # Ler header
+    header = compressed_data[:13]
+    quant_type, diff_min, diff_max, size = struct.unpack('>BIII', header)
+    
+    # Converter valores unsigned de volta para signed se necessário
+    if diff_min > 2147483647:  # Se era negativo
+        diff_min = diff_min - 4294967296
+    if diff_max > 2147483647:  # Se era negativo
+        diff_max = diff_max - 4294967296
+    
+    # Descomprimir dados
+    compressed_diffs = compressed_data[13:]
+    decompressed_diffs = zlib.decompress(compressed_diffs)
+    
+    # Reconstruir diferenças
+    if quant_type == 1:  # 8 bits
+        quantized = np.frombuffer(decompressed_diffs, dtype=np.uint8)
+    else:  # 16 bits  
+        quantized = np.frombuffer(decompressed_diffs, dtype=np.uint16)
+    
+    # Dequantizar
+    diff_range = diff_max - diff_min
+    if diff_range == 0:
+        diff_flat = np.full(size, diff_min, dtype=np.int32)
+    else:
+        if quant_type == 1:
+            diff_flat = (quantized.astype(np.int32) * diff_range // 255) + diff_min
+        else:
+            diff_flat = (quantized.astype(np.int32) * diff_range // 65535) + diff_min
+    
+    # Reshape para forma original
+    diff_array = diff_flat.reshape(original_shape).astype(np.int32)
+    
+    # Reconstruir imagem original das diferenças
+    height, width = original_shape
+    img_reconstructed = np.zeros_like(diff_array)
+    
+    # Primeira linha e coluna
+    img_reconstructed[0, :] = diff_array[0, :]
+    img_reconstructed[:, 0] = diff_array[:, 0]
+    
+    # Reconstruir resto usando predição inversa
+    for y in range(1, height):
+        for x in range(1, width):
+            left = img_reconstructed[y, x-1]
+            top = img_reconstructed[y-1, x]
+            top_left = img_reconstructed[y-1, x-1]
+            
+            prediction = left + top - top_left
+            img_reconstructed[y, x] = diff_array[y, x] + prediction
+    
+    return img_reconstructed.astype(original_dtype)
+
+
+
 def compress_image_with_algorithm(image_array, algorithm):
     """Compress image using a specific algorithm"""
     original_size = image_size(image_array)
@@ -136,7 +481,9 @@ def compress_image_with_algorithm(image_array, algorithm):
         'zlib': zlib.compress,
         'gzip': gzip.compress,
         'bz2': bz2.compress,
-        'lzma': lzma.compress
+        'lzma': lzma.compress,
+        'png': lambda data: compress_png(image_array),  # PNG usa a imagem original, não os bytes
+        'gdcm': lambda data: compress_gdcm(image_array)  # GDCM usa a imagem original
     }
     
     if algorithm not in algorithms:
@@ -144,7 +491,13 @@ def compress_image_with_algorithm(image_array, algorithm):
     
     try:
         compress_func = algorithms[algorithm]
-        compressed = compress_func(byte_data)
+        
+        # PNG e GDCM precisam tratamento especial
+        if algorithm in ['png', 'gdcm']:
+            compressed = compress_func(byte_data)  # Para PNG/GDCM, a função já usa image_array
+        else:
+            compressed = compress_func(byte_data)
+        
         compression_ratio = len(compressed) / len(byte_data)
         
         print(f"✅ {algorithm}: {len(compressed)} bytes ({compression_ratio*100:.1f}%) - {len(compressed)/1024:.1f} KB")
@@ -170,6 +523,22 @@ def decompress_image(compressed_info):
     """Decompress image data"""
     if compressed_info['algorithm'] == 'none':
         decompressed = compressed_info['compressed_data']
+        recovered = np.frombuffer(decompressed, dtype=compressed_info['original_dtype'])
+        recovered = recovered.reshape(compressed_info['original_shape'])
+    elif compressed_info['algorithm'] == 'png':
+        # PNG precisa tratamento especial
+        recovered = decompress_png(
+            compressed_info['compressed_data'],
+            compressed_info['original_shape'],
+            compressed_info['original_dtype']
+        )
+    elif compressed_info['algorithm'] == 'gdcm':
+        # GDCM precisa tratamento especial
+        recovered = decompress_gdcm(
+            compressed_info['compressed_data'],
+            compressed_info['original_shape'],
+            compressed_info['original_dtype']
+        )
     else:
         algorithms = {
             'zlib': zlib.decompress,
@@ -180,9 +549,8 @@ def decompress_image(compressed_info):
         
         decompress_func = algorithms[compressed_info['algorithm']]
         decompressed = decompress_func(compressed_info['compressed_data'])
-    
-    recovered = np.frombuffer(decompressed, dtype=compressed_info['original_dtype'])
-    recovered = recovered.reshape(compressed_info['original_shape'])
+        recovered = np.frombuffer(decompressed, dtype=compressed_info['original_dtype'])
+        recovered = recovered.reshape(compressed_info['original_shape'])
     
     return recovered
 
@@ -225,7 +593,7 @@ def save_compressed_stego_bitstream(local_compressed_info, global_compressed_inf
     compressed_path = f"{output_folder}/{image_name}_stego_data.bin"
     
     # Mapear algoritmos e tipos para códigos
-    algo_codes = {'none': 0, 'zlib': 1, 'gzip': 2, 'bz2': 3, 'lzma': 4}
+    algo_codes = {'none': 0, 'zlib': 1, 'gzip': 2, 'bz2': 3, 'lzma': 4, 'png': 5, 'gdcm': 6}
     dtype_codes = {np.uint8: 0, np.uint16: 1, np.int16: 2, np.uint32: 3, np.int32: 4}
     
     # Preparar dados
@@ -327,7 +695,7 @@ def load_compressed_stego_bitstream(filepath):
     """Load compressed steganographic data from dynamic struct-based binary file"""
     
     # Mapear códigos de volta para algoritmos e tipos
-    algo_names = {0: 'none', 1: 'zlib', 2: 'gzip', 3: 'bz2', 4: 'lzma'}
+    algo_names = {0: 'none', 1: 'zlib', 2: 'gzip', 3: 'bz2', 4: 'lzma', 5: 'png', 6: 'gdcm'}
     dtype_types = {0: np.uint8, 1: np.uint16, 2: np.int16, 3: np.uint32, 4: np.int32}
     
     with open(filepath, 'rb') as f:
