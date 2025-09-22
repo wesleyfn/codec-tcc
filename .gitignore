@@ -3,3 +3,6 @@ validate*
 __pycache__
 output/*
 *venv*
+*test*
+*debug*
+*compar*

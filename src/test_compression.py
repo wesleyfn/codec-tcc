@@ -26,7 +26,7 @@ def test_all_compression_algorithms(image_path):
     print("-" * 70)
     
     # Algoritmos para testar
-    algorithms = ['zlib', 'gzip', 'bz2', 'lzma', 'png', 'gdcm']
+    algorithms = ['zlib', 'gzip', 'bz2', 'lzma', 'png', 'jpegls', 'jpeg2000', 'rle']
     results = {}
     
     for algorithm in algorithms:
@@ -88,12 +88,12 @@ def test_all_compression_algorithms(image_path):
 
 def main():
     # Testar com a imagem peito.dcm
-    image_path = "/home/wesleyn/Documents/codec-tcc/images/peito.dcm"
+    image_path = "images/peito.dcm"
     
     if not os.path.exists(image_path):
         print(f"❌ Arquivo não encontrado: {image_path}")
         # Listar arquivos disponíveis
-        images_dir = "/home/wesleyn/Documents/codec-tcc/images/"
+        images_dir = "images/"
         if os.path.exists(images_dir):
             print("📁 Arquivos disponíveis:")
             for f in os.listdir(images_dir):

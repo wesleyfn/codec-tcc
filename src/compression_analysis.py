@@ -94,10 +94,10 @@ def main():
     """
     Executa análise de compressão para o exemplo peito.dcm e peito_stego_data.bin
     """
-    # Caminhos dos arquivos
-    original_dcm = "/home/wesleyn/Documents/codec-tcc/images/peito.dcm"
-    compressed_bin = "/home/wesleyn/Documents/codec-tcc/output/peito/peito_stego_data.bin"
-    
+    # Caminhos dos arquivos para linux e windows
+    original_dcm = "images/peito.dcm"
+    compressed_bin = "output/peito/peito_stego_data.bin"
+
     # Verifica se os arquivos existem
     if not os.path.exists(original_dcm):
         print(f"Erro: Arquivo não encontrado: {original_dcm}")

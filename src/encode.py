@@ -38,15 +38,8 @@ def pee_embed(local_img, nbits, message_bits, threshold):
     L_stego = local_int.copy()
     bits = list(message_bits)
     bit_idx = 0
-    
-    print(f"📝 Processando imagem {h}x{w} - {len(bits)} bits para inserir...")
-    progress_step = h // 10 if h >= 10 else 1
 
     for y in range(h):
-        if y % progress_step == 0:
-            progress = (y / h) * 100
-            print(f"  Progresso: {progress:.1f}% - {bit_idx}/{len(bits)} bits inseridos")
-        
         for x in range(w):
             pred = _predictor_left_top(local_int, y, x)  # usa imagem original
             e = int(local_int[y, x]) - pred             # erro original
@@ -95,11 +88,6 @@ def encode_image(image_path, message, threshold=2, s=1, local_algorithm='lzma', 
     Returns:
         dict: Resultados da codificação
     """
-    print(f"🎯 Iniciando codificação esteganográfica...")
-    print(f"   Imagem: {image_path}")
-    print(f"   Mensagem: {len(message)} caracteres")
-    print(f"   Parâmetros: threshold={threshold}, s={s}")
-    
     # Validar que é arquivo DICOM
     if not image_path.lower().endswith('.dcm'):
         raise ValueError("Apenas arquivos DICOM (.dcm) são suportados para codificação")
@@ -113,7 +101,7 @@ def encode_image(image_path, message, threshold=2, s=1, local_algorithm='lzma', 
     if len(image.shape) != 2:
         raise ValueError(f"Apenas imagens DICOM 2D são suportadas. Dimensões encontradas: {image.shape}")
     
-    print(f"📊 Imagem DICOM carregada: {image.shape}, {nbits} bits/pixel")
+    print(f"📊 Processando {os.path.basename(image_path)} - {image.shape}, {nbits} bits/pixel")
     
     # Extrair planos de bits
     planes = extract_bit_planes(image, nbits)
@@ -128,16 +116,11 @@ def encode_image(image_path, message, threshold=2, s=1, local_algorithm='lzma', 
     for i, plane in enumerate(global_planes):
         global_image |= (plane.astype(image.dtype) << (i + len(local_planes)))
     
-    print(f"🔧 Modalidades: Local {len(local_planes)} bits, Global {len(global_planes)} bits")
-    
     # Comprimir componente global
-    print(f"🗜️ Comprimindo componente global com {global_algorithm}...")
     compressed_global_info = compress_image_with_algorithm(global_image, global_algorithm)
     
     # Aplicar esteganografia na componente local
-    print("🔐 Aplicando esteganografia PEE...")
     local_stego, bitmap, used = steganography_encode(local_image, len(local_planes), message, threshold)
-    print(f"✅ Esteganografia concluída. Bits usados: {used}")
     
     # Reconstruir imagem esteganográfica
     stego_image = build_image_from_modality(local_stego, global_image)
@@ -146,10 +129,7 @@ def encode_image(image_path, message, threshold=2, s=1, local_algorithm='lzma', 
     image_base_name = os.path.splitext(os.path.basename(image_path))[0]
     output_folder = create_output_folder(image_base_name)
     
-    # Não salvar mais imagens PNG/DCM - apenas o bitstream
-    
     # Comprimir componente local
-    print(f"🗜️ Comprimindo componente local com {local_algorithm}...")
     compressed_local_info = compress_image_with_algorithm(local_stego, local_algorithm)
     
     # Preparar parâmetros de esteganografia
@@ -160,7 +140,6 @@ def encode_image(image_path, message, threshold=2, s=1, local_algorithm='lzma', 
     }
     
     # Salvar bitstream comprimido completo
-    print("💾 Salvando bitstream completo...")
     bitstream_path = save_compressed_stego_bitstream(
         compressed_local_info, 
         compressed_global_info, 
@@ -170,9 +149,7 @@ def encode_image(image_path, message, threshold=2, s=1, local_algorithm='lzma', 
         stego_params
     )
     
-    print(f"✅ Codificação concluída!")
-    print(f"   📁 Pasta de saída: {output_folder}")
-    print(f"   📄 Bitstream: {bitstream_path}")
+    print(f"✅ Codificação concluída - {os.path.basename(bitstream_path)}")
     
     return {
         'stego_image': stego_image,
@@ -190,7 +167,7 @@ def main():
     """Exemplo de uso do encoder"""
     dir = "images"
     name = "peito"
-    image_path = f'{dir}/{name}.dcm'  # ou 'example.png'
+    image_path = f'{dir}/{name}.dcm' 
     message = (
         " \"É uma mensagem longa para testar a implementação de esteganografia\n"
         "  com funcionalidade de inserção e extração PEE e deve ser suficientemente\n"
@@ -201,14 +178,18 @@ def main():
         "  Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.\""
     )
     
-    # Codificar mensagem na imagem
+    # png - png = 2.29
+    # jpegls - jpegls = 4.91
+    # jpeg2000 - jpeg2000 = 5.08
+
+
     result = encode_image(
         image_path=image_path,
         message=message,
         threshold=2,
-        s=1,
-        local_algorithm='lzma',
-        global_algorithm='gdcm'
+        s=3,
+        local_algorithm="jpeg2000",
+        global_algorithm="jpegls"
     )
     
     print(f"\n🎉 Processo de codificação finalizado!")

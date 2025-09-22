@@ -163,14 +163,7 @@ def pee_extract(local_stego, nbits, bitmap, threshold=2):
     eof_bits = message_to_bits(EOF_MARKER)
     eof_length = len(eof_bits)
     
-    print(f"🔍 Extraindo de {n_positions} posições marcadas...")
-    progress_step = max(n_positions // 10, 1) if n_positions >= 10 else 1
-
     for idx, (y, x) in enumerate(positions):
-        if idx % progress_step == 0:
-            progress = (idx / n_positions) * 100
-            print(f"  Progresso: {progress:.1f}% - {extracted} bits extraídos")
-        
         # Computar preditor usando imagem progressivamente recuperada (causal)
         pred = _predictor_left_top(recovered, int(y), int(x))
         e_prime = int(recovered[y, x]) - pred
@@ -192,7 +185,7 @@ def pee_extract(local_stego, nbits, bitmap, threshold=2):
                     # Verifica se os últimos bits formam o marcador EOF
                     if bits[-eof_length:] == eof_bits:
                         bits = bits[:-eof_length]  # Remove o marcador dos bits finais
-                        print(f"🔚 Marcador EOF detectado! Extração automática finalizada.")
+                        pass  # EOF detectado
                         break
                 
             else:
@@ -235,15 +228,10 @@ def decode_from_bitstream(bitstream_path, save_recovered=True, patient_info=None
     Returns:
         dict: Resultados da decodificação
     """
-    print(f"🔍 Iniciando decodificação esteganográfica...")
-    print(f"   Bitstream: {bitstream_path}")
-    
     # Carregar dados completos do bitstream
-    print("📄 Carregando bitstream...")
     stego_data = load_compressed_stego_bitstream(bitstream_path)
     
     # Recuperar componentes comprimidos
-    print("🗜️ Descomprimindo componentes...")
     local_recovered_comp = decompress_image(stego_data['local_component'])
     global_recovered_comp = decompress_image(stego_data['global_component'])
     
@@ -254,10 +242,7 @@ def decode_from_bitstream(bitstream_path, save_recovered=True, patient_info=None
     # Usar parâmetros salvos
     params = stego_data['stego_params']
     
-    print(f"🔧 Parâmetros PEE: threshold={params['threshold']}, s={params['s']}")
-    
     # EXTRAÇÃO AUTOMÁTICA usando EOF marker
-    print("🔐 Extraindo mensagem com PEE...")
     local_recovered, bits, stats = pee_extract(
         local_recovered_comp, 
         params['s'], 
@@ -266,7 +251,6 @@ def decode_from_bitstream(bitstream_path, save_recovered=True, patient_info=None
     )
 
     # Reconstruir imagem original
-    print("🖼️ Reconstruindo imagem original...")
     image_original = build_image_from_modality(local_recovered, global_recovered_comp)
     
     # Salvar imagem recuperada se solicitado
@@ -286,7 +270,7 @@ def decode_from_bitstream(bitstream_path, save_recovered=True, patient_info=None
         }
         save_image(image_original, png_data, output_folder)
         recovered_paths['png'] = f"{output_folder}/recovered_{image_base_name}.png"
-        print(f"💾 PNG para debug salvo: {recovered_paths['png']}")
+        recovered_paths['png'] = f"{output_folder}/recovered_{image_base_name}.png"
         
         # Salvar como DCM (precisamos criar metadados básicos)
         dcm_data = {
@@ -297,14 +281,11 @@ def decode_from_bitstream(bitstream_path, save_recovered=True, patient_info=None
         }
         save_image(image_original, dcm_data, output_folder)
         recovered_paths['dcm'] = f"{output_folder}/recovered_{image_base_name}.dcm"
-        print(f"💾 DICOM recuperado salvo: {recovered_paths['dcm']}")
     
     # Converter bits para mensagem
     recovered_message = bits_to_message(bits)
     
-    print(f"✅ Decodificação concluída!")
-    print(f"   📊 Estatísticas: {stats}")
-    print(f"   📝 Mensagem: {len(recovered_message)} caracteres extraídos")
+    # Decodificação concluída
     
     return {
         'message': recovered_message,
@@ -340,28 +321,15 @@ def verify_extraction(original_message, extracted_message):
     Returns:
         dict: Resultados da verificação
     """
-    print(f"\n🔬 VERIFICAÇÃO DE INTEGRIDADE:")
-    print(f"   Original:   {len(original_message)} caracteres")
-    print(f"   Extraída:   {len(extracted_message)} caracteres")
-    
     # Verificar se as mensagens são idênticas
     match = original_message == extracted_message
     
-    if match:
-        print(f"   ✅ Status: PERFEITA - Mensagens idênticas")
-    else:
-        # Encontrar diferenças
+    if not match:
         min_len = min(len(original_message), len(extracted_message))
         diff_positions = []
-        
         for i in range(min_len):
             if original_message[i] != extracted_message[i]:
                 diff_positions.append(i)
-        
-        print(f"   ❌ Status: DIVERGENTE")
-        print(f"   📍 Diferenças: {len(diff_positions)} posições")
-        if diff_positions:
-            print(f"   📍 Primeiras diferenças: {diff_positions[:5]}")
     
     return {
         'match': match,
@@ -384,9 +352,6 @@ def main():
     # Decodificar mensagem da imagem
     result = decode_from_bitstream(bitstream_path)
     
-    print(f"\n📝 MENSAGEM RECUPERADA:")
-    print(f"{result['message']}")
-    
     # Exemplo de verificação (se você souber a mensagem original)
     original_message = (
         " \"É uma mensagem longa para testar a implementação de esteganografia\n"
@@ -399,12 +364,7 @@ def main():
     )
     
     verification = verify_extraction(original_message, result['message'])
-    
-    print(f"\n🎉 Processo de decodificação finalizado!")
-    print(f"   Precisão: {verification['accuracy']*100:.1f}%")
-    if result['recovered_paths']:
-        print(f"   PNG (debug): {result['recovered_paths'].get('png', 'N/A')}")
-        print(f"   DICOM: {result['recovered_paths'].get('dcm', 'N/A')}")
+    print(f"✅ Decodificação finalizada - Precisão: {verification['accuracy']*100:.1f}%")
 
 if __name__ == '__main__':
     main()
