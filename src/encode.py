@@ -1,5 +1,6 @@
 import numpy as np
 import os
+from PIL import Image
 from tools import (
     load_image,
     create_output_folder,
@@ -7,86 +8,151 @@ from tools import (
     build_modality,
     build_image_from_modality,
     compress_image_with_algorithm,
-    save_compressed_stego_bitstream,
-    message_to_bits
+    save_compressed_stego_bitstream_multi_ultra_compact,
+    message_to_bits,
+    find_optimal_cut_point,
+    save_stego_dicom
 )
 
-def _predictor_left_top(img, y, x):
-    """Preditor usado no PEE - média entre pixel à esquerda e acima"""
-    left = int(img[y, x-1]) if x > 0 else 0
-    top = int(img[y-1, x]) if y > 0 else 0
-    return (left + top) // 2
 
-def pee_embed(local_img, nbits, message_bits, threshold):
+def lsb_embed_multi_plane(local_planes, message_bits, s):
     """
-    PEE (Prediction Error Expansion) embedding
+    LSB embedding distribuído em múltiplos planos com pesos exponenciais
     
     Args:
-        local_img: Imagem local onde inserir a mensagem
-        nbits: Número de bits por pixel
-        message_bits: Lista de bits da mensagem
-        threshold: Limiar para expansão do erro de predição
+        local_planes: Lista de planos de bits locais [plane0, plane1, ..., plane_s-1]
+        message_bits: Lista de bits da mensagem completa
+        s: Número de planos a usar (n_lsb = s)
     
     Returns:
-        tuple: (imagem_stego, bitmap, bits_usados)
+        tuple: (planos_stego, bitmaps, comprimentos_segmentos)
     """
-    h, w = local_img.shape
-    local_int = local_img.astype(np.int32)
-    maxval = (1 << nbits) - 1
-
-    bitmap = np.zeros_like(local_img, dtype=np.uint8)
-    L_stego = local_int.copy()
-    bits = list(message_bits)
+    import random
+    
+    # Dividir mensagem em s segmentos usando pesos exponenciais
+    total_bits = len(message_bits)
+    if total_bits == 0:
+        return local_planes.copy(), [np.zeros_like(plane) for plane in local_planes], [0] * s
+    
+    # Calcular pesos exponenciais: planos LSB (índices menores) recebem mais dados
+    # Peso do plano i = 2^(s-i-1), onde i vai de 0 a s-1
+    weights = [2**(s-i-1) for i in range(s)]
+    total_weight = sum(weights)
+    
+    # Calcular comprimentos dos segmentos baseados nos pesos
+    segments_lengths = []
+    allocated_bits = 0
+    
+    for i in range(s - 1):
+        # Proporção do peso atual em relação ao total
+        proportion = weights[i] / total_weight
+        segment_length = int(total_bits * proportion)
+        segments_lengths.append(segment_length)
+        allocated_bits += segment_length
+    
+    # Último segmento pega os bits restantes
+    remaining_bits = total_bits - allocated_bits
+    segments_lengths.append(remaining_bits)
+    
+    # Print resumo da distribuição
+    print(f"📊 Distribuição exponencial: {segments_lengths} bits em {s} planos")
+    
+    # Dividir bits da mensagem em segmentos baseados nos pesos
+    message_segments = []
     bit_idx = 0
-
-    for y in range(h):
-        for x in range(w):
-            pred = _predictor_left_top(local_int, y, x)  # usa imagem original
-            e = int(local_int[y, x]) - pred             # erro original
+    for length in segments_lengths:
+        segment = message_bits[bit_idx:bit_idx + length]
+        message_segments.append(segment)
+        bit_idx += length
+    
+    # Usar ordem sequencial baseada nos pesos (sem embaralhamento aleatório)
+    segment_indices = list(range(s))  # Ordem: 0, 1, 2, ..., s-1
+    
+    # segments_lengths já está na ordem correta dos pesos
+    actual_segments_lengths = segments_lengths.copy()
+    
+    stego_planes = []
+    bitmaps = []
+    
+    for i in range(s):
+        plane = local_planes[i].copy()
+        original_plane = plane.copy()
+        segment_idx = segment_indices[i]  # Sempre igual a i agora (ordem sequencial)
+        segment_bits = message_segments[segment_idx]
+        
+        # Embed LSB neste plano usando operações vetorizadas
+        h, w = plane.shape
+        bitmap = np.zeros_like(plane, dtype=np.uint8)
+        
+        if len(segment_bits) > 0:
+            # Número de bits a processar (limitado pelo tamanho do plano)
+            max_bits = min(len(segment_bits), h * w)
             
-            if abs(e) <= threshold and bit_idx < len(bits):
-                b = bits[bit_idx]
-                e_exp = 2*e + b  # expansão do erro
-                newp = pred + e_exp
-                
-                if 0 <= newp <= maxval:
-                    L_stego[y, x] = newp
-                    bitmap[y, x] = 255  # marca posição no bitmap
-                    bit_idx += 1
+            # Converter bits do segmento para array numpy
+            segment_array = np.array(segment_bits[:max_bits], dtype=np.uint8)
+            
+            # Flatten da imagem para processamento linear
+            plane_flat = plane.flatten()
+            
+            # Criar máscara de posições onde bits serão embarcados
+            positions_mask = np.arange(len(plane_flat)) < max_bits
+            
+            # LSBs originais das posições a serem modificadas
+            original_lsbs = plane_flat[:max_bits] & 1
+            
+            # Máscara onde LSB precisa ser invertido
+            flip_mask = original_lsbs != segment_array
+            
+            # Aplicar flip apenas onde necessário
+            plane_flat[:max_bits] = np.where(flip_mask, 
+                                           plane_flat[:max_bits] ^ 1, 
+                                           plane_flat[:max_bits])
+            
+            # Reshape de volta
+            plane[:] = plane_flat.reshape(h, w)
+            
+            # Marcar posições usadas no bitmap
+            bitmap_flat = bitmap.flatten()
+            bitmap_flat[:max_bits] = 1
+            bitmap[:] = bitmap_flat.reshape(h, w)
+        
+        stego_planes.append(plane)
+        bitmaps.append(bitmap)
+    
+    return stego_planes, bitmaps, actual_segments_lengths, segment_indices
 
-    return L_stego.astype(local_img.dtype), bitmap, bit_idx
 
-def steganography_encode(local_image, nbits, message, threshold):
+
+def steganography_encode(local_planes, message, s):
     """
-    Função principal de codificação esteganográfica
+    Esteganografia LSB distribuída em múltiplos planos (n_lsb = s)
     
     Args:
-        local_image: Imagem local para inserir mensagem
-        nbits: Número de bits por pixel
+        local_planes: Lista de planos de bits locais
         message: Mensagem a ser inserida
-        threshold: Limiar PEE
+        s: Número de planos a usar (n_lsb = s)
     
     Returns:
-        tuple: (imagem_stego, bitmap, bits_usados)
+        tuple: (planos_stego, bitmaps, comprimentos_segmentos, bits_totais, indices_embaralhamento)
     """
     message_bits = message_to_bits(message)
-    L_stego, bitmap, used = pee_embed(local_image, nbits, message_bits, threshold)
-    return L_stego, bitmap, used
+    stego_planes, bitmaps, segments_lengths, segment_indices = lsb_embed_multi_plane(local_planes, message_bits, s)
+    
+    return stego_planes, bitmaps, segments_lengths, len(message_bits), segment_indices
 
-def encode_image(image_path, message, threshold=2, s=1, local_algorithm='lzma', global_algorithm='zlib'):
+def encode_image(image_path, message, beta=0.8, local_algorithm='lzma', global_algorithm='zlib'):
     """
-    Pipeline completo de codificação esteganográfica
+    Pipeline completo de codificação esteganográfica LSB multi-plano
     
     Args:
         image_path: Caminho para a imagem DICOM (.dcm)
         message: Mensagem a ser inserida
-        threshold: Limiar PEE (padrão: 2)
-        s: Índice de modalidade (padrão: 1)
+        beta: Parâmetro limiar para cálculo automático de s* (padrão: 0.8)
         local_algorithm: Algoritmo de compressão local (padrão: 'lzma')
         global_algorithm: Algoritmo de compressão global (padrão: 'zlib')
     
     Returns:
-        dict: Resultados da codificação
+        dict: Resultados da codificação com s* calculado automaticamente
     """
     # Validar que é arquivo DICOM
     if not image_path.lower().endswith('.dcm'):
@@ -105,13 +171,22 @@ def encode_image(image_path, message, threshold=2, s=1, local_algorithm='lzma', 
     
     # Extrair planos de bits
     planes = extract_bit_planes(image, nbits)
+    
+    # Calcular s* automaticamente usando informação mútua
+    s = find_optimal_cut_point(image, planes, beta=beta)
+    
     local_planes, global_planes = build_modality(planes, s=s)
     
-    # Construir imagens local e global
-    local_image = np.zeros_like(image, dtype=image.dtype)
-    for i, plane in enumerate(local_planes):
-        local_image |= (plane.astype(image.dtype) << i)
-
+    # Arquitetura LSB multi-plano: n_lsb = s (usar todos os planos locais)
+    # Aplicar esteganografia LSB multi-plano nos planos locais
+    stego_local_planes, bitmaps, segments_lengths, total_bits, segment_indices = steganography_encode(local_planes, message, s)
+    
+    # Construir imagem local esteganográfica
+    local_stego = np.zeros_like(image, dtype=image.dtype)
+    for i, plane in enumerate(stego_local_planes):
+        local_stego |= (plane.astype(image.dtype) << i)
+    
+    # Construir imagem global (inalterada)
     global_image = np.zeros_like(image, dtype=image.dtype)
     for i, plane in enumerate(global_planes):
         global_image |= (plane.astype(image.dtype) << (i + len(local_planes)))
@@ -119,10 +194,7 @@ def encode_image(image_path, message, threshold=2, s=1, local_algorithm='lzma', 
     # Comprimir componente global
     compressed_global_info = compress_image_with_algorithm(global_image, global_algorithm)
     
-    # Aplicar esteganografia na componente local
-    local_stego, bitmap, used = steganography_encode(local_image, len(local_planes), message, threshold)
-    
-    # Reconstruir imagem esteganográfica
+    # Reconstruir imagem esteganográfica completa
     stego_image = build_image_from_modality(local_stego, global_image)
     
     # Criar estrutura de pastas organizada
@@ -132,69 +204,98 @@ def encode_image(image_path, message, threshold=2, s=1, local_algorithm='lzma', 
     # Comprimir componente local
     compressed_local_info = compress_image_with_algorithm(local_stego, local_algorithm)
     
-    # Preparar parâmetros de esteganografia
+    # Preparar parâmetros de esteganografia LSB multi-plano
     stego_params = {
-        'threshold': threshold,
+        'method': 'lsb',  # Apenas LSB multi-plano
+        'n_lsb': s,  # n_lsb = s
         's': s,
-        'bits_used': used
+        'bits_used': total_bits,
+        'segments_lengths': segments_lengths,  # Comprimentos dos segmentos
+        'segment_indices': segment_indices  # Ordem de embaralhamento
     }
     
-    # Salvar bitstream comprimido completo
-    bitstream_path = save_compressed_stego_bitstream(
+    # Salvar bitstream comprimido completo com múltiplos bitmaps (formato compacto STG4)
+    bitstream_path = save_compressed_stego_bitstream_multi_ultra_compact(
         compressed_local_info, 
         compressed_global_info, 
         output_folder, 
         image_base_name, 
-        bitmap, 
+        bitmaps,  # Lista de bitmaps (um por plano)
         stego_params
     )
     
-    print(f"✅ Codificação concluída - {os.path.basename(bitstream_path)}")
+    # Salvar imagem esteganográfica como PNG normalizada
+    stego_image_path = os.path.join(output_folder, f"{image_base_name}_stego.png")
+    
+    if nbits > 8:
+        # Para imagens 16-bit, usar normalização adaptativa que preserva contraste
+        # Encontrar valores mínimo e máximo reais da imagem
+        min_val = np.min(stego_image)
+        max_val = np.max(stego_image)
+        
+        # Normalizar usando o range real da imagem para preservar contraste
+        if max_val > min_val:
+            stego_normalized = ((stego_image.astype('float64') - min_val) / (max_val - min_val) * 255).astype('uint8')
+        else:
+            # Caso especial: imagem uniforme
+            stego_normalized = np.full_like(stego_image, 128, dtype='uint8')
+    else:
+        # Para imagens 8-bit, usar diretamente
+        stego_normalized = stego_image.astype('uint8')
+    
+    stego_pil = Image.fromarray(stego_normalized)
+    stego_pil.save(stego_image_path)
+    
+    # Salvar imagem esteganográfica como DICOM
+    stego_dicom_path = os.path.join(output_folder, f"{image_base_name}_stego.dcm")
+    save_stego_dicom(data['metadata'], stego_image, stego_dicom_path)
+    
+    print(f"✅ Codificação finalizada - {s} planos, {total_bits} bits")
     
     return {
         'stego_image': stego_image,
-        'bitmap': bitmap,
+        'stego_image_path': stego_image_path,
+        'stego_dicom_path': stego_dicom_path,
+        'bitmaps': bitmaps,  # Lista de bitmaps
         'output_folder': output_folder,
         'bitstream_path': bitstream_path,
-        'bits_used': used,
+        'bits_used': total_bits,
+        'segments_lengths': segments_lengths,
         'local_compressed': compressed_local_info,
         'global_compressed': compressed_global_info,
         'stego_params': stego_params,
-        'original_data': data
+        'original_data': data,
+        's_optimal': s  # Valor de s* calculado ou usado
     }
 
 def main():
-    """Exemplo de uso do encoder"""
-    dir = "images"
-    name = "peito"
-    image_path = f'{dir}/{name}.dcm' 
+    """Exemplo de uso do encoder com s* automático"""
+    name = "torax"
+    image_path = f'images/{name}.dcm' 
     message = (
         " \"É uma mensagem longa para testar a implementação de esteganografia\n"
-        "  com funcionalidade de inserção e extração PEE e deve ser suficientemente\n"
-        "  extensa para cobrir múltiplos bits e garantir que o processo de inserção\n"
-        "  seja devidamente exercitado. Lorem ipsum dolor sit amet, consectetur\n"
+        "  com funcionalidade de inserção e extração LSB multi-plano e deve ser\n"
+        "  suficientemente extensa para cobrir múltiplos bits e garantir que o\n"
+        "  processo de inserção seja devidamente exercitado. Lorem ipsum dolor\n"
+        "  sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt\n"
+        "  ut labore et dolore magna aliqua. Lorem ipsum dolor sit amet, consectetur\n"
         "  adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore\n"
-        "  magna aliqua. Lorem ipsum dolor sit amet, consectetur adipiscing elit.\n"
-        "  Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.\""
+        "  magna aliqua.\""
     )
     
-    # png - png = 2.29
-    # jpegls - jpegls = 4.91
-    # jpeg2000 - jpeg2000 = 5.08
-
-
+    # Algoritmos de compressão testados:
+    # png - png = 2.29, jpegls - jpegls = 4.91, jpeg2000 - jpeg2000 = 5.08
+    
+    # Codificação LSB multi-plano com s* calculado automaticamente via informação mútua
     result = encode_image(
         image_path=image_path,
         message=message,
-        threshold=2,
-        s=3,
-        local_algorithm="jpeg2000",
-        global_algorithm="jpegls"
+        beta=0.8,  # Parâmetro limiar conforme paper (s* calculado automaticamente)
+        local_algorithm="jpegls",
+        global_algorithm="png"
     )
     
-    print(f"\n🎉 Processo de codificação finalizado!")
-    print(f"   Bits utilizados: {result['bits_used']}")
-    print(f"   Arquivo de saída: {result['bitstream_path']}")
+    print(f"📁 Salvo: {os.path.basename(result['bitstream_path'])}")
 
 if __name__ == '__main__':
     main()

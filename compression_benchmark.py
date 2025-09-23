@@ -20,11 +20,15 @@ def benchmark_compression_algorithms():
     # Algoritmos de compressão disponíveis
     algorithms = ['png', 'avif', 'jpegxl', 'jpegls']
     
-    # Configurações de teste
+    # Configurações de teste - s de 1 até 7
     test_configs = [
-        {'s': 1, 'image': 'images/peito.dcm', 'name': 'Peito s=1'},
-        {'s': 2, 'image': 'images/peito.dcm', 'name': 'Peito s=2'},
-        {'s': 3, 'image': 'images/peito.dcm', 'name': 'Peito s=3'},
+        {'s': 1, 'image': 'images/torax.dcm', 'name': 'Torax s=1'},
+        {'s': 2, 'image': 'images/torax.dcm', 'name': 'Torax s=2'},
+        {'s': 3, 'image': 'images/torax.dcm', 'name': 'Torax s=3'},
+        {'s': 4, 'image': 'images/torax.dcm', 'name': 'Torax s=4'},
+        {'s': 5, 'image': 'images/torax.dcm', 'name': 'Torax s=5'},
+        {'s': 6, 'image': 'images/torax.dcm', 'name': 'Torax s=6'},
+        {'s': 7, 'image': 'images/torax.dcm', 'name': 'Torax s=7'},
     ]
     
     # Mensagem de teste
@@ -155,104 +159,238 @@ def benchmark_compression_algorithms():
     print_top_combinations(df)
 
 def create_compression_charts(df):
-    """Cria gráficos de comparação dos algoritmos - APENAS 3 GRÁFICOS PRINCIPAIS"""
+    """Cria gráficos detalhados mostrando performance por valor de s"""
     
     # Configurar estilo
     plt.style.use('default')
     sns.set_palette("husl")
     
-    # Criar figura com 3 subplots em linha
-    fig = plt.figure(figsize=(18, 6))
+    # Criar figura com múltiplos subplots
+    fig = plt.figure(figsize=(20, 15))
     
-    # 1. Heatmap de taxa de compressão combinada
-    plt.subplot(1, 3, 1)
-    pivot_combined = df.pivot_table(values='combined_ratio', 
-                                   index='local_algorithm', 
-                                   columns='global_algorithm', 
-                                   aggfunc='mean')
-    sns.heatmap(pivot_combined, annot=True, fmt='.2f', cmap='RdYlGn_r', 
-                cbar_kws={'label': 'Taxa Compressão'}, square=True)
-    plt.title('Taxa de Compressão Combinada\n(Menor = Melhor)', fontsize=14, fontweight='bold')
-    plt.xlabel('Algoritmo Global', fontsize=12)
-    plt.ylabel('Algoritmo Local', fontsize=12)
+    # 1. Gráfico de linha: Taxa de compressão por s para cada combinação
+    plt.subplot(3, 2, 1)
+    for combination in df['combination'].unique():
+        combo_data = df[df['combination'] == combination].sort_values('s')
+        plt.plot(combo_data['s'], combo_data['combined_ratio'], 
+                marker='o', linewidth=2, label=combination, markersize=6)
     
-    # 2. Heatmap de tempo de encoding
-    plt.subplot(1, 3, 2)
-    pivot_time = df.pivot_table(values='encode_time', 
-                               index='local_algorithm', 
-                               columns='global_algorithm', 
-                               aggfunc='mean')
-    sns.heatmap(pivot_time, annot=True, fmt='.2f', cmap='RdYlBu_r',
-                cbar_kws={'label': 'Tempo (s)'}, square=True)
-    plt.title('Tempo de Encoding\n(Menor = Melhor)', fontsize=14, fontweight='bold')
-    plt.xlabel('Algoritmo Global', fontsize=12)
-    plt.ylabel('Algoritmo Local', fontsize=12)
+    plt.xlabel('Parâmetro s', fontweight='bold')
+    plt.ylabel('Taxa de Compressão (%)', fontweight='bold')
+    plt.title('Taxa de Compressão por Parâmetro s\n(Menor = Melhor)', fontsize=14, fontweight='bold')
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.grid(True, alpha=0.3)
+    plt.xticks(sorted(df['s'].unique()))
     
-    # 3. Heatmap de eficiência (compressão/tempo)
-    plt.subplot(1, 3, 3)
-    pivot_eff = df.pivot_table(values='efficiency', 
-                              index='local_algorithm', 
-                              columns='global_algorithm', 
-                              aggfunc='mean')
-    sns.heatmap(pivot_eff, annot=True, fmt='.2f', cmap='RdYlGn',
-                cbar_kws={'label': 'Eficiência'}, square=True)
-    plt.title('Eficiência (Compressão/Tempo)\n(Maior = Melhor)', fontsize=14, fontweight='bold')
-    plt.xlabel('Algoritmo Global', fontsize=12)
-    plt.ylabel('Algoritmo Local', fontsize=12)
+    # 2. Gráfico de linha: Tempo de encoding por s
+    plt.subplot(3, 2, 2)
+    for combination in df['combination'].unique():
+        combo_data = df[df['combination'] == combination].sort_values('s')
+        plt.plot(combo_data['s'], combo_data['encode_time'], 
+                marker='s', linewidth=2, label=combination, markersize=6)
+    
+    plt.xlabel('Parâmetro s', fontweight='bold')
+    plt.ylabel('Tempo de Encoding (s)', fontweight='bold')
+    plt.title('Tempo de Encoding por Parâmetro s\n(Menor = Melhor)', fontsize=14, fontweight='bold')
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.grid(True, alpha=0.3)
+    plt.xticks(sorted(df['s'].unique()))
+    
+    # 3. Gráfico de linha: Eficiência por s
+    plt.subplot(3, 2, 3)
+    for combination in df['combination'].unique():
+        combo_data = df[df['combination'] == combination].sort_values('s')
+        plt.plot(combo_data['s'], combo_data['efficiency'], 
+                marker='^', linewidth=2, label=combination, markersize=6)
+    
+    plt.xlabel('Parâmetro s', fontweight='bold')
+    plt.ylabel('Eficiência (Compressão/Tempo)', fontweight='bold')
+    plt.title('Eficiência por Parâmetro s\n(Maior = Melhor)', fontsize=14, fontweight='bold')
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.grid(True, alpha=0.3)
+    plt.xticks(sorted(df['s'].unique()))
+    
+    # 4. Heatmap: Melhor combinação por s
+    plt.subplot(3, 2, 4)
+    # Encontrar melhor combinação para cada s
+    best_by_s = df.loc[df.groupby('s')['efficiency'].idxmax()]
+    best_matrix = best_by_s.pivot_table(values='efficiency', 
+                                       index='combination', 
+                                       columns='s', 
+                                       fill_value=0)
+    
+    sns.heatmap(best_matrix, annot=True, fmt='.1f', cmap='RdYlGn',
+                cbar_kws={'label': 'Eficiência'})
+    plt.title('Melhor Método por Parâmetro s\n(Eficiência)', fontsize=14, fontweight='bold')
+    plt.xlabel('Parâmetro s', fontweight='bold')
+    plt.ylabel('Combinação', fontweight='bold')
+    
+    # 5. Gráfico de barras: Ranking médio por combinação
+    plt.subplot(3, 2, 5)
+    avg_performance = df.groupby('combination').agg({
+        'combined_ratio': 'mean',
+        'encode_time': 'mean', 
+        'efficiency': 'mean'
+    }).round(2)
+    
+    # Ordenar por eficiência
+    avg_performance = avg_performance.sort_values('efficiency', ascending=False)
+    
+    x_pos = range(len(avg_performance))
+    bars = plt.bar(x_pos, avg_performance['efficiency'], 
+                   color=sns.color_palette("husl", len(avg_performance)))
+    
+    plt.xlabel('Combinação de Algoritmos', fontweight='bold')
+    plt.ylabel('Eficiência Média', fontweight='bold')
+    plt.title('Ranking Geral por Eficiência\n(Média de todos os s)', fontsize=14, fontweight='bold')
+    plt.xticks(x_pos, avg_performance.index, rotation=45, ha='right')
+    
+    # Adicionar valores nas barras
+    for i, bar in enumerate(bars):
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width()/2., height + 0.1,
+                f'{height:.1f}', ha='center', va='bottom', fontweight='bold')
+    
+    # 6. Tabela de detalhes por s
+    plt.subplot(3, 2, 6)
+    plt.axis('off')
+    
+    # Criar tabela com melhores resultados por s
+    summary_data = []
+    for s_val in sorted(df['s'].unique()):
+        s_data = df[df['s'] == s_val]
+        best_compression = s_data.loc[s_data['combined_ratio'].idxmin()]
+        best_speed = s_data.loc[s_data['encode_time'].idxmin()]
+        best_efficiency = s_data.loc[s_data['efficiency'].idxmax()]
+        
+        summary_data.append([
+            f"s={s_val}",
+            f"{best_compression['combination']}\n({best_compression['combined_ratio']:.1f}%)",
+            f"{best_speed['combination']}\n({best_speed['encode_time']:.1f}s)",
+            f"{best_efficiency['combination']}\n({best_efficiency['efficiency']:.1f})"
+        ])
+    
+    table = plt.table(cellText=summary_data,
+                     colLabels=['S', 'Melhor Compressão', 'Mais Rápido', 'Mais Eficiente'],
+                     cellLoc='center',
+                     loc='center',
+                     bbox=[0, 0, 1, 1])
+    
+    table.auto_set_font_size(False)
+    table.set_fontsize(9)
+    table.scale(1, 2)
+    
+    # Colorir header
+    for i in range(4):
+        table[(0, i)].set_facecolor('#40466e')
+        table[(0, i)].set_text_props(weight='bold', color='white')
+    
+    plt.title('Resumo dos Melhores Métodos por s', fontsize=14, fontweight='bold', pad=20)
     
     plt.tight_layout(pad=3.0)
     
     # Salvar gráfico
-    output_path = 'compression_benchmark.png'
+    output_path = 'compression_benchmark_detailed.png'
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    print(f"📊 Gráfico salvo em: {output_path}")
+    print(f"📊 Gráfico detalhado salvo em: {output_path}")
     
     plt.show()
 
 def print_top_combinations(df):
-    """Mostra as melhores combinações"""
+    """Mostra as melhores combinações com análise detalhada por s"""
     
-    print(f"\n{'='*80}")
-    print(f"🏆 MELHORES COMBINAÇÕES")
-    print(f"{'='*80}")
+    print(f"\n{'='*100}")
+    print(f"🏆 ANÁLISE DETALHADA POR PARÂMETRO S")
+    print(f"{'='*100}")
     
-    # Top 5 melhor compressão
-    print(f"\n🎯 TOP 5 MELHOR COMPRESSÃO (menor %):")
-    top_compression = df.nsmallest(5, 'combined_ratio')
-    for i, (_, row) in enumerate(top_compression.iterrows(), 1):
-        print(f"  {i}. {row['combination']:<15} (s={row['s']}) - "
-              f"{row['combined_ratio']:5.1f}% em {row['encode_time']:4.1f}s")
+    # Análise por cada valor de s
+    for s_val in sorted(df['s'].unique()):
+        print(f"\n{'─'*60}")
+        print(f"📊 RESULTADOS PARA s={s_val}")
+        print(f"{'─'*60}")
+        
+        s_data = df[df['s'] == s_val].copy()
+        s_data = s_data.sort_values('efficiency', ascending=False)
+        
+        print(f"\n🥇 RANKING POR EFICIÊNCIA (s={s_val}):")
+        for i, (_, row) in enumerate(s_data.iterrows(), 1):
+            print(f"  {i:2d}. {row['combination']:<12} - "
+                  f"Compressão: {row['combined_ratio']:5.1f}%, "
+                  f"Tempo: {row['encode_time']:5.1f}s, "
+                  f"Eficiência: {row['efficiency']:5.1f}")
+        
+        # Destaques para s específico
+        best_comp = s_data.loc[s_data['combined_ratio'].idxmin()]
+        fastest = s_data.loc[s_data['encode_time'].idxmin()]
+        most_eff = s_data.loc[s_data['efficiency'].idxmax()]
+        
+        print(f"\n   🎯 Melhor compressão: {best_comp['combination']} ({best_comp['combined_ratio']:.1f}%)")
+        print(f"   ⚡ Mais rápido: {fastest['combination']} ({fastest['encode_time']:.1f}s)")
+        print(f"   🚀 Mais eficiente: {most_eff['combination']} ({most_eff['efficiency']:.1f})")
     
-    # Top 5 mais rápido
-    print(f"\n⚡ TOP 5 MAIS RÁPIDO:")
-    top_speed = df.nsmallest(5, 'encode_time')
-    for i, (_, row) in enumerate(top_speed.iterrows(), 1):
-        print(f"  {i}. {row['combination']:<15} (s={row['s']}) - "
-              f"{row['encode_time']:4.1f}s com {row['combined_ratio']:5.1f}%")
+    # Resumo geral
+    print(f"\n{'='*100}")
+    print(f"📈 TENDÊNCIAS GERAIS")
+    print(f"{'='*100}")
     
-    # Top 5 melhor eficiência
-    print(f"\n🚀 TOP 5 MELHOR EFICIÊNCIA (compressão/tempo):")
-    top_efficiency = df.nlargest(5, 'efficiency')
-    for i, (_, row) in enumerate(top_efficiency.iterrows(), 1):
-        print(f"  {i}. {row['combination']:<15} (s={row['s']}) - "
-              f"Eficiência: {row['efficiency']:5.1f}")
-    
-    # Recomendação geral
-    print(f"\n💡 RECOMENDAÇÕES:")
+    # Melhor combinação por critério geral
+    print(f"\n🏆 CAMPEÕES GERAIS (considerando todos os s):")
     
     best_overall = df.loc[df['efficiency'].idxmax()]
-    print(f"  🥇 Melhor geral: {best_overall['combination']} (s={best_overall['s']})")
-    print(f"     Compressão: {best_overall['combined_ratio']:.1f}%, "
-          f"Tempo: {best_overall['encode_time']:.1f}s, "
-          f"Eficiência: {best_overall['efficiency']:.1f}")
+    print(f"  🥇 Mais eficiente geral: {best_overall['combination']} (s={best_overall['s']})")
+    print(f"     Eficiência: {best_overall['efficiency']:.1f}, "
+          f"Compressão: {best_overall['combined_ratio']:.1f}%, "
+          f"Tempo: {best_overall['encode_time']:.1f}s")
     
     best_compression = df.loc[df['combined_ratio'].idxmin()]
-    print(f"  🎯 Melhor compressão: {best_compression['combination']} (s={best_compression['s']})")
-    print(f"     Taxa: {best_compression['combined_ratio']:.1f}%")
+    print(f"  🎯 Melhor compressão geral: {best_compression['combination']} (s={best_compression['s']})")
+    print(f"     Compressão: {best_compression['combined_ratio']:.1f}%")
     
     fastest = df.loc[df['encode_time'].idxmin()]
-    print(f"  ⚡ Mais rápido: {fastest['combination']} (s={fastest['s']})")
+    print(f"  ⚡ Mais rápido geral: {fastest['combination']} (s={fastest['s']})")
     print(f"     Tempo: {fastest['encode_time']:.1f}s")
+    
+    # Análise de comportamento por s
+    print(f"\n📊 COMPORTAMENTO POR PARÂMETRO S:")
+    for combination in df['combination'].unique():
+        combo_data = df[df['combination'] == combination].sort_values('s')
+        if len(combo_data) > 1:
+            # Calcular tendência
+            comp_trend = "↑" if combo_data['combined_ratio'].iloc[-1] > combo_data['combined_ratio'].iloc[0] else "↓"
+            time_trend = "↑" if combo_data['encode_time'].iloc[-1] > combo_data['encode_time'].iloc[0] else "↓"
+            eff_trend = "↑" if combo_data['efficiency'].iloc[-1] > combo_data['efficiency'].iloc[0] else "↓"
+            
+            print(f"  {combination:<12}: "
+                  f"Compressão {comp_trend} "
+                  f"({combo_data['combined_ratio'].iloc[0]:.1f}% → {combo_data['combined_ratio'].iloc[-1]:.1f}%), "
+                  f"Tempo {time_trend} "
+                  f"({combo_data['encode_time'].iloc[0]:.1f}s → {combo_data['encode_time'].iloc[-1]:.1f}s), "
+                  f"Eficiência {eff_trend}")
+    
+    # Recomendações
+    print(f"\n💡 RECOMENDAÇÕES:")
+    
+    # Média por combinação
+    avg_performance = df.groupby('combination').agg({
+        'combined_ratio': 'mean',
+        'encode_time': 'mean', 
+        'efficiency': 'mean'
+    }).round(2)
+    
+    best_avg = avg_performance.loc[avg_performance['efficiency'].idxmax()]
+    print(f"  🌟 Para uso geral: {avg_performance['efficiency'].idxmax()}")
+    print(f"     Eficiência média: {best_avg['efficiency']:.1f}")
+    
+    if 'jpegls' in avg_performance.index:
+        jpegls_combos = [combo for combo in avg_performance.index if 'jpegls' in combo]
+        if jpegls_combos:
+            best_jpegls = max(jpegls_combos, key=lambda x: avg_performance.loc[x, 'efficiency'])
+            print(f"  🏥 Para imagens médicas: {best_jpegls}")
+            print(f"     Eficiência: {avg_performance.loc[best_jpegls, 'efficiency']:.1f}")
+    
+    fastest_avg = avg_performance.loc[avg_performance['encode_time'].idxmin()]
+    print(f"  ⚡ Para processamento rápido: {avg_performance['encode_time'].idxmin()}")
+    print(f"     Tempo médio: {fastest_avg['encode_time']:.1f}s")
 
 if __name__ == "__main__":
     # Verificar se matplotlib está disponível

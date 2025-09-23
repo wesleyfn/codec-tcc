@@ -6,3 +6,6 @@ output/*
 *test*
 *debug*
 *compar*
+*analyze*
+*create*
+*.md
