@@ -1,1 +1,0 @@
-- Utilizar algoritmos de compressão para arquivos DICOM ao invés dos nativos do python
