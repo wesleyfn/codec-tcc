@@ -9,3 +9,5 @@ output/*
 *analyze*
 *create*
 *.md
+*vscode*
+*.pdf

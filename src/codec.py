@@ -8,14 +8,37 @@ import struct
 from datetime import datetime
 from PIL import Image
 from pydicom.dataset import FileDataset, FileMetaDataset
-from pydicom.uid import ExplicitVRLittleEndian, generate_uid
+from pydicom.uid import ExplicitVRLittleEndian, generate_uid, JPEGLSLossless, JPEG2000Lossless, DeflatedExplicitVRLittleEndian
+from pydicom.encaps import encapsulate
+import zlib
+import pydicom.config
+from pydicom.pixel_data_handlers import pylibjpeg_handler
+pydicom.config.image_handlers = [pylibjpeg_handler]
+import subprocess
+import pillow_jxl
 
-def create_dicom(image_array: np.ndarray, filename="synthetic.dcm", bits_stored=16) -> FileDataset:
+def save_dicom(ds: FileDataset, file_path: str):
+    ds.save_as(file_path, write_like_original=False)
+    print(f"Arquivo DICOM salvo em: {file_path}")
+
+def create_dicom(image_array: np.ndarray) -> FileDataset:
     """
-    Cria um DICOM sintético VÁLIDO e que pode ser visualizado a partir de um numpy array.
+    Cria um Dataset DICOM simples com dados de imagem NÃO COMPRIMIDOS.
     """
-    if image_array.ndim != 2:
-        raise ValueError("A imagem deve ser 2D (grayscale).")
+    max_val = image_array.max()
+    min_val = image_array.min()
+    
+    print(f"   - Debug: max_val={max_val}, min_val={min_val}, dtype={image_array.dtype}")
+
+    # Calcula bits necessários para representar o valor máximo
+    log_val = np.log2(float(max_val) + 1.0)
+    bits_stored = int(np.ceil(log_val))
+    bits_stored = max(1, bits_stored)  # Garante pelo menos 1 bit
+
+    print(f"   - Bits Stored calculado: {bits_stored} (max pixel value: {max_val})")
+
+    if image_array.ndim != 2: raise ValueError("A imagem deve ser 2D (grayscale).")
+
     if image_array.dtype not in [np.uint8, np.uint16]:
         raise ValueError("A imagem deve ser uint8 ou uint16.")
 
@@ -85,39 +108,104 @@ def create_dicom(image_array: np.ndarray, filename="synthetic.dcm", bits_stored=
     else:
         arr = image_array.astype(np.uint8)
     ds.PixelData = arr.tobytes()
-
-    # --- Salvar no disco ---
-    # A flag `write_like_original=False` não é necessária com FileDataset
-    ds.save_as(filename, write_like_original=False)
+    
     return ds
 
-def compress_png(image_array: np.ndarray) -> bytes:
-    mode = "I;16" if image_array.dtype == np.uint16 else "L"
-    pil_img = Image.fromarray(image_array, mode=mode)
+def compress_image(image_array: np.ndarray, codec: str) -> bytes:
+    """Comprime um array de imagem usando o codec especificado ('png', 'jpeg2000', 'jpegls')."""
+    print(f"   - Comprimindo com {codec.upper()}...")
     
-    buffer = io.BytesIO()
-    pil_img.save(buffer, format="PNG", optimize=True, compress_level=9)
+    if codec in ['j2k', 'jls']:
+        # Abordagem com GDCM para JPEG2000 e JPEG-LS (robusta e já funcional)
+        temp_uncompressed = 'temp_uncompressed.dcm'
+        temp_compressed = 'temp_compressed.dcm'
+        try:
+            ds_uncompressed = create_dicom(image_array)
+            ds_uncompressed.save_as(temp_uncompressed)
+            if codec == 'j2k':
+                cmd = ['gdcmconv', '--j2k', temp_uncompressed, temp_compressed]
+            else:
+                cmd = ['gdcmconv', '--jpegls', temp_uncompressed, temp_compressed]
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            with open(temp_compressed, 'rb') as f:
+                return f.read()
+        finally:
+            if os.path.exists(temp_uncompressed): os.remove(temp_uncompressed)
+            if os.path.exists(temp_compressed): os.remove(temp_compressed)
+            
+    elif codec == 'png':
+        # Para PNG, usamos o handler interno do pydicom (Deflate/zlib)
+        # 1. Cria um dataset DICOM com dados brutos
+        ds = create_dicom(image_array)
+        
+        # 2. Define a sintaxe de transferência para Deflate (compressão tipo PNG/ZIP)
+        ds.file_meta.TransferSyntaxUID = DeflatedExplicitVRLittleEndian
+        
+        # 3. Salva no buffer. O pydicom irá comprimir os dados automaticamente.
+        buffer = io.BytesIO()
+        ds.save_as(buffer)
+        return buffer.getvalue()
 
-    return buffer.getvalue()
+    elif codec == 'jxl':      
+        temp_input_png = 'temp_for_jxl.png'
+        temp_output_jxl = 'temp_compressed.jxl'
+        try:
+            if image_array.dtype == np.uint16:
+                pil_img = Image.fromarray(image_array.astype(np.uint16))
+            else:
+                pil_img = Image.fromarray(image_array)
+            pil_img.save(temp_input_png)
 
-def decompress_png(png_bytes: bytes) -> np.ndarray:
-    buffer = io.BytesIO(png_bytes)
-    pil_img = Image.open(buffer)
-    arr = np.array(pil_img)
+            cmd = ['cjxl.exe', temp_input_png, temp_output_jxl, '-d', '0', '-e', '9']
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    return arr.astype(np.uint16) if arr.dtype == np.uint16 else arr.astype(np.uint8)
+            with open(temp_output_jxl, 'rb') as f:
+                return f.read()
+        finally:
+            # 4. Limpa os ficheiros temporários
+            if os.path.exists(temp_input_png): os.remove(temp_input_png)
+            if os.path.exists(temp_output_jxl): os.remove(temp_output_jxl)
+        
+    else:
+        raise ValueError(f"Codec '{codec}' não suportado.")
+
+def decompress_image(compressed_bytes: bytes, codec: str) -> np.ndarray:
+    """Descomprime bytes de imagem com base no codec especificado."""
+    # A função de descompressão já estava correta, pois o pydicom.dcmread
+    # invoca automaticamente o handler de descompressão correto.
+    if codec == 'png':
+        buffer = io.BytesIO(compressed_bytes)
+        pil_img = Image.open(buffer)
+        return np.array(pil_img)
+    
+    elif codec in ['jpeg2000', 'jpegls']:
+        temp_file = 'temp_decompress.dcm'
+        
+        ds = create_dicom(np.zeros((100, 100), dtype=np.uint8))  # Dummy array
+        if codec == 'jpeg2000':
+            ds.file_meta.TransferSyntaxUID = JPEG2000Lossless
+        else:
+            ds.file_meta.TransferSyntaxUID = JPEGLSLossless
+        
+        ds.PixelData = compressed_bytes
+        ds.save_as(temp_file)
+        
+        ds_compressed = pydicom.dcmread(temp_file)
+        result = ds_compressed.pixel_array
+        
+        try:
+            os.remove(temp_file)
+        except Exception:
+            pass
+            
+        return result
+    
+    else:
+        raise ValueError(f"Codec '{codec}' não suportado.")
 
 def load_dicom_image(file_path):
     dicom_data = pydicom.dcmread(file_path)
     return dicom_data
-
-def save_dicom_image(dicom_data, file_path):
-    dicom_data.save_as(file_path)
-
-def save_image_binary(local_stego: np.ndarray, global_compressed: np.ndarray, file_path: str):
-    bitstream = build_bitstream(local_stego, global_compressed)
-    with open(file_path, 'wb') as file:
-        file.write(bitstream)
 
 def merge_modalities(global_planes: np.ndarray, local_planes: np.ndarray) -> np.ndarray:
     dtype = global_planes[0].dtype
@@ -140,33 +228,34 @@ def lsb_embed_multi_plane(local_planes, message_bits):
         s = len(local_planes)
         total_bits = len(message_bits)
 
-        segment_size, remainder = divmod(total_bits, s)
-
-        segments = [message_bits[i * segment_size + min(i, remainder): (i + 1) * segment_size + min(i + 1, remainder)] for i in range(s)]
-        segment_indices = list(range(s)); 
-        
-        random.seed(42); 
-        random.shuffle(segment_indices)
-    
+        # Distribui os bits usando pesos (planos mais significativos recebem mais bits)
         weights = [(s - i) ** 2 for i in range(s)]
         total_weight = sum(weights)
-
         distributed_sizes = [max(1, int((w / total_weight) * total_bits)) for w in weights]
+        
+        # Ajusta para garantir que a soma seja exatamente total_bits
         excess = sum(distributed_sizes) - total_bits
-
         if excess > 0:
             max_idx = distributed_sizes.index(max(distributed_sizes))
             distributed_sizes[max_idx] -= excess
+        elif excess < 0:
+            max_idx = distributed_sizes.index(max(distributed_sizes))
+            distributed_sizes[max_idx] -= excess  # excess é negativo, então subtrai um negativo = soma
 
-        bit_idx = 0
-        new_segments = []
+        # Cria segmentos com os tamanhos redistribuídos
+        segment_indices = list(range(s))
+        random.seed(42)
+        random.shuffle(segment_indices)
         
+        bit_idx = 0
+        segments = []
+        
+        # Cria os segmentos na ordem correta dos tamanhos distribuídos
         for dest_plane_idx in segment_indices:
             size = distributed_sizes[dest_plane_idx]
-            new_segments.append(message_bits[bit_idx:bit_idx+size])
+            segments.append(message_bits[bit_idx:bit_idx+size])
             bit_idx += size
 
-        segments = new_segments
         stego_planes = [None] * s
         bitmaps = [None] * s
         segments_lengths = [0] * s
@@ -178,26 +267,32 @@ def lsb_embed_multi_plane(local_planes, message_bits):
 
             h, w = plane.shape
             stego_plane = plane.copy()
-            bitmap = np.zeros_like(plane, dtype=np.uint8)
             num_bits = min(len(segment), h * w)
+
+            # Calcula quantas linhas são realmente necessárias
+            lines_needed = (num_bits + w - 1) // w  # Ceiling division
+            
+            # Cria bitmap compacto apenas com as linhas necessárias
+            bitmap_compact = np.zeros((lines_needed, w), dtype=np.uint8)
 
             linear_indices = np.arange(num_bits)
             y_coords = linear_indices // w
             x_coords = linear_indices % w
             original_pixels = stego_plane[y_coords, x_coords]
-            current_lsbs = original_pixels & 1
             msg_bits = np.array(list(segment[:num_bits]), dtype=np.uint8)
             
-            needs_change = (current_lsbs != msg_bits)
-            if np.any(needs_change):
-                new_pixels = (original_pixels & 0xFE) | msg_bits
-                stego_plane[y_coords[needs_change], x_coords[needs_change]] = new_pixels[needs_change]
+            # Cria os pixels stego
+            stego_pixels = (original_pixels & 0xFE) | msg_bits
+            stego_plane[y_coords, x_coords] = stego_pixels
 
-            bitmap[y_coords, x_coords] = 1
+            # BITMAP XOR: Armazena o XOR entre pixel original e pixel stego
+            # Para recuperação perfeita: original_pixel = stego_pixel XOR bitmap_value
+            xor_values = original_pixels ^ stego_pixels
+            bitmap_compact[y_coords, x_coords] = xor_values
+            
             stego_planes[dest_plane_idx] = stego_plane
-            bitmaps[dest_plane_idx] = bitmap
-            segments_lengths[dest_plane_idx] = len(segment)
-
+            bitmaps[dest_plane_idx] = bitmap_compact
+            segments_lengths[dest_plane_idx] = len(segment)  # Tamanho real do segmento embarcado
             total_used += num_bits
 
         return stego_planes, bitmaps, total_used, segments_lengths, segment_indices
@@ -211,7 +306,7 @@ def calculate_entropy(data_array):
     counts = np.bincount(data_array.ravel())
     
     # Calculamos a probabilidade de cada valor
-    probabilities = counts[counts > 0] / len(data_array.ravel())
+    probabilities = counts[counts > 0] / data_array.size
     
     # Aplicamos a fórmula da entropia
     entropy = -np.sum(probabilities * np.log2(probabilities))
@@ -220,58 +315,73 @@ def calculate_entropy(data_array):
 def calculate_mutual_information(bit_plane, image_array):
     """
     Calcula a informação mútua I(X;Y) entre um plano de bit (X) e a imagem (Y).
-    Esta versão é específica e precisa para a tarefa, usando binning exato.
+    Versão otimizada para performance com cache e cálculos eficientes.
     I(X;Y) = H(X) + H(Y) - H(X,Y)
     """
-    # Se uma das variáveis for constante, a informação mútua é zero.
+    # Cache para evitar recálculos desnecessários
+    if not hasattr(calculate_mutual_information, '_cache'):
+        calculate_mutual_information._cache = {}
+    
+    # Chave do cache baseada no hash dos arrays
+    cache_key = (hash(bit_plane.tobytes()), hash(image_array.tobytes()))
+    if cache_key in calculate_mutual_information._cache:
+        return calculate_mutual_information._cache[cache_key]
+    
+    # Verificação rápida para variáveis constantes
     if bit_plane.min() == bit_plane.max() or image_array.min() == image_array.max():
-        return 0.0
+        result = 0.0
+        calculate_mutual_information._cache[cache_key] = result
+        return result
 
-    # H(X) - Entropia do plano de bit
-    h_x = calculate_entropy(bit_plane)
+    # Flatten uma vez só para ambos os arrays
+    bit_plane_flat = bit_plane.ravel()
+    image_array_flat = image_array.ravel()
+    
+    # H(X) - Entropia do plano de bit (sempre 0 ou 1)
+    counts_x = np.bincount(bit_plane_flat, minlength=2)
+    probs_x = counts_x[counts_x > 0] / bit_plane.size
+    h_x = -np.sum(probs_x * np.log2(probs_x))
 
-    # H(Y) - Entropia da imagem inteira
-    h_y = calculate_entropy(image_array)
-
-    # H(X,Y) - Entropia conjunta
-    # Usamos um histograma 2D com o número exato de estados para cada variável.
-    # Plano de bit (X): 2 estados (0, 1)
-    # Imagem (Y): image_array.max() + 1 estados (ex: 256 para 8-bit)
-    # Define o número de bins com base no tipo de dados, não no valor máximo.
+    # H(Y) - Entropia da imagem (usar bincount direto é mais rápido)
     if image_array.dtype == np.uint8:
-        num_bins_y = 256  # Para imagens de 8 bits (0-255)
+        max_val = 255
     elif image_array.dtype == np.uint16:
-        num_bins_y = 65536 # Para imagens de 16 bits (0-65535)
+        max_val = 65535
     else:
-        # Fallback para outros tipos de dados
-        num_bins_y = int(image_array.max() + 1)
+        max_val = int(image_array.max())
+    
+    counts_y = np.bincount(image_array_flat, minlength=max_val + 1)
+    probs_y = counts_y[counts_y > 0] / image_array.size
+    h_y = -np.sum(probs_y * np.log2(probs_y))
 
-    bins = [2, num_bins_y]
-    # Define o range explicitamente para garantir que o histograma cubra todos os valores possíveis
-    range_y = [0, num_bins_y - 1]
-    
-    joint_hist = np.histogram2d(bit_plane.ravel(), image_array.ravel(), bins=bins, range=[[0, 1], range_y])[0]
-    
-    
-    joint_probs = joint_hist / joint_hist.sum()
-    h_xy = -np.sum(joint_probs[joint_probs > 0] * np.log2(joint_probs[joint_probs > 0]))
+    bit_plane_int32 = bit_plane_flat.astype(np.int32)
+    image_array_int32 = image_array_flat.astype(np.int32)
+    combined_indices = bit_plane_int32 * (max_val + 1) + image_array_int32
+    joint_counts = np.bincount(combined_indices, minlength=2 * (max_val + 1))
+    joint_probs = joint_counts[joint_counts > 0] / image_array.size
+    h_xy = -np.sum(joint_probs * np.log2(joint_probs))
     
     # Informação Mútua
     mi = h_x + h_y - h_xy
     
     # Garante que não seja negativo devido a pequenos erros de precisão do float
-    return max(0.0, mi)
+    result = max(0.0, mi)
+    calculate_mutual_information._cache[cache_key] = result
+    return result
 
 def adaptive_modalities_decomposition(image_array, beta=0.8, nbits=None):
     """
     Algoritmo 2 (Adaptado): Encontra o ponto de corte 's' usando o cálculo de MI específico.
+    Versão otimizada com cache e cálculos eficientes.
     """    
     # Determina o número de bits a partir dos metadados ou do próprio array
     nbits = image_array.dtype.itemsize * 8 if nbits is None else nbits
     print(f"   - Profundidade de bits efetiva: {nbits}")
 
+    # Pré-calcula todos os bit planes uma vez só
     bit_planes = [(image_array >> i) & 1 for i in range(nbits)]
     
+    # Calcula a entropia total da imagem apenas uma vez
     total_info = calculate_entropy(image_array)
     target_info = beta * total_info
     
@@ -281,9 +391,11 @@ def adaptive_modalities_decomposition(image_array, beta=0.8, nbits=None):
     cumulative_info = 0.0
     s = 1  # Ponto de corte padrão
     
+    # Processa os bit planes em ordem (LSB para MSB)
     for i in range(nbits):
         current_plane = bit_planes[i]
         
+        # Calcula MI apenas para o plano atual
         mi = calculate_mutual_information(current_plane, image_array)
         cumulative_info += mi
                 
@@ -291,17 +403,55 @@ def adaptive_modalities_decomposition(image_array, beta=0.8, nbits=None):
             s = i + 1
             break
     
-    # Separa os planos
+    # Separa os planos (sem recalcular)
     local_planes = bit_planes[:s]   # 's' planos menos significativos
     global_planes = bit_planes[s:]  # O restante dos planos mais significativos
     
     return s, global_planes, local_planes
 
+def create_header(segments_lengths, segment_indices, width):
+    index_s = len(segments_lengths)
+    # Formato: header_length, version, index_s, width, [segments_lengths], [segment_indices]
+    header_format = f">BBBH{index_s}H{index_s}H"
+    header_length = struct.calcsize(header_format)
 
+    header_parts = [
+        header_length,
+        1,      # Version
+        index_s,
+        width   # Width comum a todos os bitmaps
+    ]
+    header_parts.extend(segments_lengths)
+    header_parts.extend(segment_indices)
 
+    print(f"Header: {header_parts}")
+
+    header_bytes = struct.pack(header_format, *header_parts)
+    return header_bytes
+
+def create_binary_file(filename, header_bytes, stego_compressed, bitmaps_list):
+    """
+    Salva o arquivo binário simplificado.
+    Estrutura: STGC + header + [bitmaps_compressed] + stego_compressed
+    """
+    # Comprime cada bitmap individualmente e concatena
+    bitmaps_compressed = b""
+    for bitmap in bitmaps_list:
+        bitmap_bytes = np.packbits(bitmap).tobytes()
+        bitmap_compressed = zlib.compress(bitmap_bytes)
+        # Inclui o tamanho do bitmap comprimido para facilitar a leitura
+        bitmaps_compressed += struct.pack(">I", len(bitmap_compressed)) + bitmap_compressed
+    
+    with open(filename, "wb") as f:
+        f.write(b"STGC")                          # Assinatura
+        f.write(header_bytes)                     # Header principal
+        f.write(bitmaps_compressed)               # Bitmaps comprimidos com tamanhos
+        f.write(stego_compressed)                 # Imagem comprimida
+
+    return os.path.getsize(filename)
 
 def main():
-    name = "peito"
+    name = "pe"
     dicom_data = load_dicom_image(f"images/{name}.dcm")
     image_array = dicom_data.pixel_array
     bits_stored = dicom_data.BitsStored
@@ -322,18 +472,18 @@ def main():
     )
     message_bits = message_to_bits(message)
 
-    index_s, global_modality, local_modality = adaptive_modalities_decomposition(image_array, beta=0.8, nbits=bits_stored)
-    local_stego, bitmap, total_used, segments_lengths, segment_indices = lsb_embed_multi_plane(local_modality, message_bits)
+    index_s, global_modality, local_modality = adaptive_modalities_decomposition(image_array, beta=0.5, nbits=bits_stored)
+    local_stego, bitmaps, total_used, segments_lengths, segment_indices = lsb_embed_multi_plane(local_modality, message_bits)
     image_stego = merge_modalities(global_modality, local_stego)
 
-    # Salva a imagem esteganografada
-    create_dicom(image_stego, f"output/{name}_stego.dcm", bits_stored)
+    stego_compressed = compress_image(image_stego, codec='jxl')
 
-    print(f"> dtype: {dicom_data.pixel_array.dtype}, shape: {dicom_data.pixel_array.shape}")
-    print(f"> Index s: {index_s}")
-    print(f"> Total usado: {total_used}")
-    print(f"> Segmentos: {segments_lengths}")
-    print(f"> Índices dos segmentos: {segment_indices}")
+    # Cria header sem alturas dos bitmaps
+    width = dicom_data.Columns
+    header_bytes = create_header(segments_lengths, segment_indices, width)
+    binary_size = create_binary_file(f"output/{name}.stgc", header_bytes, stego_compressed, bitmaps)
+
+    print(f"   > Tamanho do arquivo binário: {binary_size / (1024 * 1024):<.2f} MB")
 
 if __name__ == "__main__":
     main()
