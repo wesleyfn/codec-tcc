@@ -170,36 +170,50 @@ def compress_image(image_array: np.ndarray, codec: str) -> bytes:
         raise ValueError(f"Codec '{codec}' não suportado.")
 
 def decompress_image(compressed_bytes: bytes, codec: str) -> np.ndarray:
-    """Descomprime bytes de imagem com base no codec especificado."""
-    # A função de descompressão já estava correta, pois o pydicom.dcmread
-    # invoca automaticamente o handler de descompressão correto.
-    if codec == 'png':
-        buffer = io.BytesIO(compressed_bytes)
-        pil_img = Image.open(buffer)
-        return np.array(pil_img)
-    
-    elif codec in ['jpeg2000', 'jpegls']:
-        temp_file = 'temp_decompress.dcm'
-        
-        ds = create_dicom(np.zeros((100, 100), dtype=np.uint8))  # Dummy array
-        if codec == 'jpeg2000':
-            ds.file_meta.TransferSyntaxUID = JPEG2000Lossless
-        else:
-            ds.file_meta.TransferSyntaxUID = JPEGLSLossless
-        
-        ds.PixelData = compressed_bytes
-        ds.save_as(temp_file)
-        
-        ds_compressed = pydicom.dcmread(temp_file)
-        result = ds_compressed.pixel_array
+    """Descomprime bytes de imagem com base no codec especificado ('jxl', 'j2k', 'jls')."""
+    if codec == 'jxl':
+        temp_input_jxl = 'temp_compressed.jxl'
+        temp_output_png = 'temp_decompressed.png'
         
         try:
-            os.remove(temp_file)
-        except Exception:
-            pass
+            with open(temp_input_jxl, 'wb') as f:
+                f.write(compressed_bytes)
+                
+            cmd = ['djxl.exe', temp_input_jxl, temp_output_png]
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
-        return result
-    
+            img = Image.open(temp_output_png)
+            return np.array(img)
+            
+        finally:
+            # Limpa arquivos temporários
+            if os.path.exists(temp_input_jxl): os.remove(temp_input_jxl)
+            if os.path.exists(temp_output_png): os.remove(temp_output_png)
+            
+    elif codec in ['j2k', 'jls']:
+        temp_file = 'temp_decompress.dcm'
+        
+        try:
+            ds = create_dicom(np.zeros((100, 100), dtype=np.uint8))  # Dummy array
+            if codec == 'j2k':
+                ds.file_meta.TransferSyntaxUID = JPEG2000Lossless
+            else:
+                ds.file_meta.TransferSyntaxUID = JPEGLSLossless
+            
+            ds.PixelData = compressed_bytes
+            ds.save_as(temp_file)
+            
+            ds_compressed = pydicom.dcmread(temp_file)
+            return ds_compressed.pixel_array
+            
+        finally:
+            if os.path.exists(temp_file): os.remove(temp_file)
+            
+    elif codec == 'png':
+        buffer = io.BytesIO(compressed_bytes)
+        img = Image.open(buffer)
+        return np.array(img)
+        
     else:
         raise ValueError(f"Codec '{codec}' não suportado.")
 
@@ -208,18 +222,28 @@ def load_dicom_image(file_path):
     return dicom_data
 
 def merge_modalities(global_planes: np.ndarray, local_planes: np.ndarray) -> np.ndarray:
-    dtype = global_planes[0].dtype
+    # Determina o tipo de dado baseado nos planos disponíveis
+    sample_plane = global_planes[0] if global_planes else local_planes[0]
+    total_bits = len(global_planes) + len(local_planes)
+    
+    # Escolhe uint16 se precisar de mais de 8 bits
+    dtype = np.uint16 if total_bits > 8 else np.uint8
 
-    global_image = np.zeros_like(global_planes[0], dtype)
+    # Cria arrays zerados do tipo correto
+    global_image = np.zeros(sample_plane.shape, dtype=dtype)
+    local_image = np.zeros(sample_plane.shape, dtype=dtype)
+
+    # Combina planos globais (mais significativos)
     for i, plane in enumerate(global_planes):
-        global_image |= (plane << (i + len(local_planes)))
+        shift = i + len(local_planes)
+        global_image |= (plane.astype(dtype) << shift)
 
-    local_image = np.zeros_like(local_planes[0], dtype)
+    # Combina planos locais (menos significativos)
     for i, plane in enumerate(local_planes):
-        local_image |= (plane << i)
+        local_image |= (plane.astype(dtype) << i)
 
-    merged_image = global_image | local_image
-    return merged_image
+    # Combina as duas partes
+    return global_image | local_image
 
 def message_to_bits(message: str) -> list:
     return ''.join(f"{ord(c):08b}" for c in message)
@@ -409,17 +433,16 @@ def adaptive_modalities_decomposition(image_array, beta=0.8, nbits=None):
     
     return s, global_planes, local_planes
 
-def create_header(segments_lengths, segment_indices, width):
+def create_header(segments_lengths, segment_indices,):
     index_s = len(segments_lengths)
-    # Formato: header_length, version, index_s, width, [segments_lengths], [segment_indices]
-    header_format = f">BBBH{index_s}H{index_s}H"
+    # Formato: header_length, version, index_s, [segments_lengths], [segment_indices]
+    header_format = f">BBB{index_s}H{index_s}H"
     header_length = struct.calcsize(header_format)
 
     header_parts = [
         header_length,
         1,      # Version
         index_s,
-        width   # Width comum a todos os bitmaps
     ]
     header_parts.extend(segments_lengths)
     header_parts.extend(segment_indices)
@@ -429,26 +452,122 @@ def create_header(segments_lengths, segment_indices, width):
     header_bytes = struct.pack(header_format, *header_parts)
     return header_bytes
 
+DEBUG_BITMAPS = []
+
 def create_binary_file(filename, header_bytes, stego_compressed, bitmaps_list):
     """
     Salva o arquivo binário simplificado.
     Estrutura: STGC + header + [bitmaps_compressed] + stego_compressed
     """
     # Comprime cada bitmap individualmente e concatena
-    bitmaps_compressed = b""
-    for bitmap in bitmaps_list:
-        bitmap_bytes = np.packbits(bitmap).tobytes()
-        bitmap_compressed = zlib.compress(bitmap_bytes)
-        # Inclui o tamanho do bitmap comprimido para facilitar a leitura
-        bitmaps_compressed += struct.pack(">I", len(bitmap_compressed)) + bitmap_compressed
-    
+    bitmaps_compressed = b''
+    for i, bitmap in enumerate(bitmaps_list):
+        bitmap_bytes = bitmap.tobytes()
+        compressed = zlib.compress(bitmap_bytes)
+        bitmaps_compressed += compressed
+        print(f"   - Bitmap {i}: original {len(bitmap_bytes)} bytes, comprimido {len(compressed)} bytes")
+
+    DEBUG_BITMAPS.append(bitmaps_list)
+
     with open(filename, "wb") as f:
         f.write(b"STGC")                          # Assinatura
         f.write(header_bytes)                     # Header principal
-        f.write(bitmaps_compressed)               # Bitmaps comprimidos com tamanhos
+        f.write(bitmaps_compressed)               # Bitmaps comprimidos
         f.write(stego_compressed)                 # Imagem comprimida
 
     return os.path.getsize(filename)
+
+
+"""
+-------------------------------------------------
+BINARY FILE STRUCTURE (Simplified)
+-------------------------------------------------
+STGC (4 bytes) - Signature
+Header (variable size) - Metadata
+  - header_length (2 bytes)
+  - version (1 byte)
+  - index_s (1 byte)
+  - segments_lengths (index_s * 2 bytes)
+  - segment_indices (index_s * 2 bytes)
+Bitmaps (variable size) - Compressed bitmaps
+Stego Image (variable size) - Compressed stego image
+-------------------------------------------------
+"""
+
+
+def extract_binary(filepath):
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"O arquivo {filepath} não foi encontrado.")
+        
+    with open(filepath, 'rb') as f:
+        # 1. Ler e Verificar o Número Mágico
+        if f.read(4) != b'STGC':
+            raise ValueError("Formato de arquivo inválido. Assinatura 'STGC' não encontrada.")
+        
+        # 2. Ler o Tamanho do Cabeçalho
+        header_size_bytes = f.read(1)
+        print(header_size_bytes)
+        header_size = struct.unpack('>B', header_size_bytes)[0]
+        
+        # 3. Ler o Bloco do Cabeçalho
+        header_bytes = f.read(header_size - 1)
+
+        # 4. Analisar (Parse) o Bloco do Cabeçalho
+        offset = 0
+        
+        # Parte fixa inicial: versão e index_s
+        version, index_s = struct.unpack('>BB', header_bytes[offset:offset+2])
+        offset += 2
+        
+        # Usa 'index_s' para ler as listas de 2 bytes (short, 'H')
+        list_format = f'>{index_s}H'
+        list_size = struct.calcsize(list_format)
+        
+        segments_lengths = list(struct.unpack(list_format, header_bytes[offset:offset+list_size]))
+        offset += list_size
+        
+        segment_indices = list(struct.unpack(list_format, header_bytes[offset:offset+list_size]))
+        offset += list_size
+        
+        # Guarda os metadados num dicionário
+        metadata = {
+            'version': version,
+            's': index_s,
+            'segments_lengths': segments_lengths,
+            'segment_indices': segment_indices,
+        }
+        
+        print(f"Metadata extraída: {metadata}")
+        
+        # 5. Ler os Bitmaps Comprimidos
+
+        bitmaps_data = []
+        for i in range(index_s):
+            bitmap_length = segments_lengths[i]
+            bitmap_compressed = f.read(bitmap_length)
+            bitmap_decompressed = zlib.decompress(bitmap_compressed)
+            bitmaps_data.append(bitmap_decompressed)
+        
+
+
+        # DEBUG: verificar se todos os bitmaps foram lidos corretamente
+        for i, bitmap in enumerate(bitmaps_data):
+            print(f"   > Bitmap {i}: {bitmap[:50]}\n   > {len(bitmap)} bytes")
+            print(f"   > Bitmap original {i}: {DEBUG_BITMAPS[i][:50]}\n   > {len(DEBUG_BITMAPS[i])} bytes")
+        
+
+
+
+
+        print(f"   > Total de bitmaps lidos: {len(bitmaps_data)}")
+        print("✅ Arquivo STGC lido e analisado com sucesso.")
+
+        return {
+            'metadata': metadata,
+            #'bitmaps_data': bitmaps_data,
+            #'stego_image_data': stego_image_data
+        }
+    
 
 def main():
     name = "pe"
@@ -476,14 +595,18 @@ def main():
     local_stego, bitmaps, total_used, segments_lengths, segment_indices = lsb_embed_multi_plane(local_modality, message_bits)
     image_stego = merge_modalities(global_modality, local_stego)
 
+    
     stego_compressed = compress_image(image_stego, codec='jxl')
 
     # Cria header sem alturas dos bitmaps
-    width = dicom_data.Columns
-    header_bytes = create_header(segments_lengths, segment_indices, width)
+    header_bytes = create_header(segments_lengths, segment_indices)
     binary_size = create_binary_file(f"output/{name}.stgc", header_bytes, stego_compressed, bitmaps)
 
     print(f"   > Tamanho do arquivo binário: {binary_size / (1024 * 1024):<.2f} MB")
 
+    extract_binary(f"output/{name}.stgc")
+
+# Exemplo de uso do decode
 if __name__ == "__main__":
     main()
+
