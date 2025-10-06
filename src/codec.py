@@ -15,7 +15,6 @@ import pydicom.config
 from pydicom.pixel_data_handlers import pylibjpeg_handler
 pydicom.config.image_handlers = [pylibjpeg_handler]
 import subprocess
-import pillow_jxl
 
 def save_dicom(ds: FileDataset, file_path: str):
     ds.save_as(file_path, write_like_original=False)
@@ -26,16 +25,11 @@ def create_dicom(image_array: np.ndarray) -> FileDataset:
     Cria um Dataset DICOM simples com dados de imagem NÃO COMPRIMIDOS.
     """
     max_val = image_array.max()
-    min_val = image_array.min()
     
-    print(f"   - Debug: max_val={max_val}, min_val={min_val}, dtype={image_array.dtype}")
-
     # Calcula bits necessários para representar o valor máximo
     log_val = np.log2(float(max_val) + 1.0)
     bits_stored = int(np.ceil(log_val))
     bits_stored = max(1, bits_stored)  # Garante pelo menos 1 bit
-
-    print(f"   - Bits Stored calculado: {bits_stored} (max pixel value: {max_val})")
 
     if image_array.ndim != 2: raise ValueError("A imagem deve ser 2D (grayscale).")
 
@@ -112,10 +106,30 @@ def create_dicom(image_array: np.ndarray) -> FileDataset:
     return ds
 
 def compress_image(image_array: np.ndarray, codec: str) -> bytes:
-    """Comprime um array de imagem usando o codec especificado ('png', 'jpeg2000', 'jpegls')."""
     print(f"   - Comprimindo com {codec.upper()}...")
     
-    if codec in ['j2k', 'jls']:
+    if codec == 'jxl':      
+        # Para comprimir para JXL, usamos a ferramenta 'cjxl'
+        temp_input_png = 'temp_for_jxl.png'
+        temp_output_jxl = 'temp_compressed.jxl'
+        try:
+            # 1. Salva o array de 16-bit como um PNG temporário, que o cjxl consegue ler
+            pil_img = Image.fromarray(image_array.astype(np.uint16))
+            pil_img.save(temp_input_png)
+
+            # 2. Constrói e executa o comando 'cjxl' para compressão lossless
+            cmd = ['cjxl.exe', temp_input_png, temp_output_jxl, '-d', '0', '-e', '3']
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            # 3. Lê os bytes comprimidos do ficheiro JXL resultante
+            with open(temp_output_jxl, 'rb') as f:
+                return f.read()
+        finally:
+            if os.path.exists(temp_input_png): os.remove(temp_input_png)
+            if os.path.exists(temp_output_jxl): os.remove(temp_output_jxl)
+
+        
+    elif codec in ['j2k', 'jls']:
         # Abordagem com GDCM para JPEG2000 e JPEG-LS (robusta e já funcional)
         temp_uncompressed = 'temp_uncompressed.dcm'
         temp_compressed = 'temp_compressed.dcm'
@@ -127,6 +141,7 @@ def compress_image(image_array: np.ndarray, codec: str) -> bytes:
             else:
                 cmd = ['gdcmconv', '--jpegls', temp_uncompressed, temp_compressed]
             subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
             with open(temp_compressed, 'rb') as f:
                 return f.read()
         finally:
@@ -146,50 +161,26 @@ def compress_image(image_array: np.ndarray, codec: str) -> bytes:
         ds.save_as(buffer)
         return buffer.getvalue()
 
-    elif codec == 'jxl':      
-        temp_input_png = 'temp_for_jxl.png'
-        temp_output_jxl = 'temp_compressed.jxl'
-        try:
-            if image_array.dtype == np.uint16:
-                pil_img = Image.fromarray(image_array.astype(np.uint16))
-            else:
-                pil_img = Image.fromarray(image_array)
-            pil_img.save(temp_input_png)
-
-            cmd = ['cjxl.exe', temp_input_png, temp_output_jxl, '-d', '0', '-e', '9']
-            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-            with open(temp_output_jxl, 'rb') as f:
-                return f.read()
-        finally:
-            # 4. Limpa os ficheiros temporários
-            if os.path.exists(temp_input_png): os.remove(temp_input_png)
-            if os.path.exists(temp_output_jxl): os.remove(temp_output_jxl)
-        
     else:
         raise ValueError(f"Codec '{codec}' não suportado.")
 
 def decompress_image(compressed_bytes: bytes, codec: str) -> np.ndarray:
     """Descomprime bytes de imagem com base no codec especificado ('jxl', 'j2k', 'jls')."""
     if codec == 'jxl':
-        temp_input_jxl = 'temp_compressed.jxl'
-        temp_output_png = 'temp_decompressed.png'
-        
+        temp_in, temp_out = 'temp_decompress.jxl', 'temp_decompress.png'
         try:
-            with open(temp_input_jxl, 'wb') as f:
+            with open(temp_in, 'wb') as f:
                 f.write(compressed_bytes)
-                
-            cmd = ['djxl.exe', temp_input_jxl, temp_output_png]
+
+            cmd = ['djxl.exe', temp_in, temp_out]
             subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
-            img = Image.open(temp_output_png)
-            return np.array(img)
-            
+            with Image.open(temp_out) as img: 
+                return np.array(img)
         finally:
-            # Limpa arquivos temporários
-            if os.path.exists(temp_input_jxl): os.remove(temp_input_jxl)
-            if os.path.exists(temp_output_png): os.remove(temp_output_png)
-            
+            if os.path.exists(temp_in): os.remove(temp_in)
+            if os.path.exists(temp_out): os.remove(temp_out)
+
     elif codec in ['j2k', 'jls']:
         temp_file = 'temp_decompress.dcm'
         
@@ -211,8 +202,8 @@ def decompress_image(compressed_bytes: bytes, codec: str) -> np.ndarray:
             
     elif codec == 'png':
         buffer = io.BytesIO(compressed_bytes)
-        img = Image.open(buffer)
-        return np.array(img)
+        ds = pydicom.dcmread(buffer, force=True)
+        return ds.pixel_array
         
     else:
         raise ValueError(f"Codec '{codec}' não suportado.")
@@ -248,37 +239,46 @@ def merge_modalities(global_planes: np.ndarray, local_planes: np.ndarray) -> np.
 def message_to_bits(message: str) -> list:
     return ''.join(f"{ord(c):08b}" for c in message)
 
+def distribute_message_segments(local_planes, message_bits):
+    """Distribui message_bits em segmentos compatíveis com lsb_embed_multi_plane.
+
+    Retorna: (segments, distributed_sizes, segment_indices)
+    """
+    s = len(local_planes)
+    total_bits = len(message_bits)
+
+    # Pesos quadráticos decrescentes (planos menos significativos têm menor índice)
+    weights = [(s - i) ** 2 for i in range(s)]
+    total_weight = sum(weights)
+    distributed_sizes = [max(1, int((w / total_weight) * total_bits)) for w in weights]
+
+    # Ajuste fino para garantir soma == total_bits
+    excess = sum(distributed_sizes) - total_bits
+    if excess != 0:
+        max_idx = distributed_sizes.index(max(distributed_sizes))
+        distributed_sizes[max_idx] -= excess
+
+    # Ordem determinística embaralhada (mesma semente usada na versão original)
+    segment_indices = list(range(s))
+    random.seed(42)
+    random.shuffle(segment_indices)
+
+    # Criar segmentos seguindo os tamanhos distribuídos (ordem natural dos destinos)
+    segments = []
+    bit_idx = 0
+    for dest_plane_idx in segment_indices:
+        size = distributed_sizes[dest_plane_idx]
+        segments.append(message_bits[bit_idx:bit_idx+size])
+        bit_idx += size
+
+    return segments, distributed_sizes, segment_indices
+
 def lsb_embed_multi_plane(local_planes, message_bits):
         s = len(local_planes)
         total_bits = len(message_bits)
 
-        # Distribui os bits usando pesos (planos mais significativos recebem mais bits)
-        weights = [(s - i) ** 2 for i in range(s)]
-        total_weight = sum(weights)
-        distributed_sizes = [max(1, int((w / total_weight) * total_bits)) for w in weights]
-        
-        # Ajusta para garantir que a soma seja exatamente total_bits
-        excess = sum(distributed_sizes) - total_bits
-        if excess > 0:
-            max_idx = distributed_sizes.index(max(distributed_sizes))
-            distributed_sizes[max_idx] -= excess
-        elif excess < 0:
-            max_idx = distributed_sizes.index(max(distributed_sizes))
-            distributed_sizes[max_idx] -= excess  # excess é negativo, então subtrai um negativo = soma
-
-        # Cria segmentos com os tamanhos redistribuídos
-        segment_indices = list(range(s))
-        random.seed(42)
-        random.shuffle(segment_indices)
-        
-        bit_idx = 0
-        segments = []
-        
-        # Cria os segmentos na ordem correta dos tamanhos distribuídos
-        for dest_plane_idx in segment_indices:
-            size = distributed_sizes[dest_plane_idx]
-            segments.append(message_bits[bit_idx:bit_idx+size])
-            bit_idx += size
+        # Distribui mensagem em segmentos (padronizado entre métodos)
+        segments, distributed_sizes, segment_indices = distribute_message_segments(local_planes, message_bits)
 
         stego_planes = [None] * s
         bitmaps = [None] * s
@@ -293,33 +293,198 @@ def lsb_embed_multi_plane(local_planes, message_bits):
             stego_plane = plane.copy()
             num_bits = min(len(segment), h * w)
 
-            # Calcula quantas linhas são realmente necessárias
-            lines_needed = (num_bits + w - 1) // w  # Ceiling division
-            
-            # Cria bitmap compacto apenas com as linhas necessárias
-            bitmap_compact = np.zeros((lines_needed, w), dtype=np.uint8)
+            # Cria bitmap do mesmo tamanho da imagem
+            bitmap = np.zeros((h, w), dtype=np.uint8)
 
             linear_indices = np.arange(num_bits)
             y_coords = linear_indices // w
             x_coords = linear_indices % w
             original_pixels = stego_plane[y_coords, x_coords]
             msg_bits = np.array(list(segment[:num_bits]), dtype=np.uint8)
-            
+
             # Cria os pixels stego
             stego_pixels = (original_pixels & 0xFE) | msg_bits
             stego_plane[y_coords, x_coords] = stego_pixels
 
             # BITMAP XOR: Armazena o XOR entre pixel original e pixel stego
-            # Para recuperação perfeita: original_pixel = stego_pixel XOR bitmap_value
             xor_values = original_pixels ^ stego_pixels
-            bitmap_compact[y_coords, x_coords] = xor_values
-            
+            bitmap[y_coords, x_coords] = xor_values
+
             stego_planes[dest_plane_idx] = stego_plane
-            bitmaps[dest_plane_idx] = bitmap_compact
-            segments_lengths[dest_plane_idx] = len(segment)  # Tamanho real do segmento embarcado
+            bitmaps[dest_plane_idx] = bitmap
+            segments_lengths[dest_plane_idx] = num_bits  # Tamanho real do segmento embutido
             total_used += num_bits
 
         return stego_planes, bitmaps, total_used, segments_lengths, segment_indices
+
+def lsb_embed_block_adaptive(local_planes, message_bits, block_size=8):
+    """
+    Esteganografia adaptativa por blocos.
+
+    Estratégia:
+    - Divide cada plano local em blocos de size (block_size x block_size).
+    - Calcula um score por bloco (variança por default) que indica a "segurança" do bloco
+      para modificação (blocos mais ruidosos recebem mais bits).
+    - Ordena blocos por score e preenche bits em raster dentro dos blocos até consumir a mensagem.
+
+    Retorna mesma assinatura que lsb_embed_multi_plane: (stego_planes, bitmaps, total_used, segments_lengths, segment_indices)
+    """
+    s = len(local_planes)
+    total_bits = len(message_bits)
+
+    stego_planes = [None] * s
+    bitmaps = [None] * s
+    segments_lengths = [0] * s
+    total_used = 0
+
+    # Obter segmentos padronizados (mesma distribuição do multi_plane)
+    segments, distributed_sizes, segment_indices = distribute_message_segments(local_planes, message_bits)
+
+    # Para cada plano local, processa em blocos e embute apenas o segmento correspondente
+    for orig_segment_idx, plane_idx in enumerate(segment_indices):
+        plane = local_planes[plane_idx]
+        h, w = plane.shape
+        stego_plane = plane.copy()
+
+        # Prepara blocos
+        bh = block_size
+        bw = block_size
+        blocks = []  # cada entrada: (score, y0, x0, block_h, block_w)
+        for y in range(0, h, bh):
+            for x in range(0, w, bw):
+                y1 = min(y + bh, h)
+                x1 = min(x + bw, w)
+                block = plane[y:y1, x:x1]
+                score = float(np.var(block)) 
+                blocks.append((score, y, x, y1 - y, x1 - x))
+
+        # Ordena blocos decrescentemente (mais ruído primeiro)
+        blocks.sort(key=lambda x: x[0], reverse=True)
+
+        # Cria bitmap do mesmo tamanho da imagem
+        bitmap = np.zeros((h, w), dtype=np.uint8)
+
+        # Obtém segmento dedicado a este plano
+        segment = segments[orig_segment_idx]
+        num_segment_bits = min(len(segment), h * w)
+        seg_bit_idx = 0
+
+        # Preenche blocos em ordem consumindo apenas os bits do segmento
+        # Vectorizar: converte segmento para numpy e escreve em fatias planas por bloco
+        seg_bits = np.fromiter((int(b) for b in segment[:num_segment_bits]), dtype=np.uint8, count=num_segment_bits)
+
+        for score, y0, x0, bh_real, bw_real in blocks:
+            if seg_bit_idx >= num_segment_bits:
+                break
+
+            # Obter view do bloco e sua versão plana (1D view)
+            block_view = stego_plane[y0:y0+bh_real, x0:x0+bw_real]
+            bitmap_view = bitmap[y0:y0+bh_real, x0:x0+bw_real]
+            flat_block = block_view.ravel()
+            flat_bitmap = bitmap_view.ravel()
+
+            remaining = num_segment_bits - seg_bit_idx
+            block_capacity = flat_block.size
+            k = remaining if remaining < block_capacity else block_capacity
+            if k <= 0:
+                continue
+
+            orig_vals = flat_block[:k].astype(np.uint8)
+            bits_chunk = seg_bits[seg_bit_idx:seg_bit_idx+k]
+            new_vals = (orig_vals & 0xFE) | bits_chunk
+
+            # Escreve de volta usando operações vetorizadas
+            flat_block[:k] = new_vals
+            flat_bitmap[:k] = orig_vals ^ new_vals
+
+            # Atualiza ponteiro do segmento
+            seg_bit_idx += k
+
+        used_bits = seg_bit_idx
+        stego_planes[plane_idx] = stego_plane
+        bitmaps[plane_idx] = bitmap
+        segments_lengths[plane_idx] = used_bits
+        total_used += used_bits
+
+    # Como a distribuição por planos não foi embaralhada aqui, segment_indices é identidade
+    return stego_planes, bitmaps, total_used, segments_lengths, segment_indices
+
+def lsb_embed_block_then_multiplane(local_planes, message_bits, search_block_size=8, align_across_planes: bool = False):
+    """
+    Híbrido: encontra o melhor bloco (por variância) de tamanho `search_block_size` e
+    inicia a inserção no offset raster desse bloco, mas usa a distribuição/embedding
+    do `lsb_embed_multi_plane` (ou seja, escreve bits LSB raster-wise por plano),
+    começando do pixel inicial do bloco e envolvendo (wrap) até consumir os segmentos.
+
+    Retorna a mesma assinatura: (stego_planes, bitmaps, total_used, segments_lengths, segment_indices)
+    """
+    s = len(local_planes)
+    total_bits = len(message_bits)
+
+    # Distribuição de segmentos compatível com multi_plane
+    segments, segments_lengths, segment_indices = distribute_message_segments(local_planes, message_bits)
+
+    stego_planes = [None] * s
+    bitmaps = [None] * s
+    total_used = 0
+
+    # Para escolher o melhor ponto inicial, somamos variância local numa janela search_block_size
+    # Usamos o primeiro plano como referência de textura (poderia usar média/score entre planos)
+    ref_plane = local_planes[0]
+    h, w = ref_plane.shape
+    sb = search_block_size
+
+    best_score = -1.0
+    best_y = 0
+    best_x = 0
+
+    for y in range(0, h, sb):
+        for x in range(0, w, sb):
+            y1 = min(y + sb, h)
+            x1 = min(x + sb, w)
+            block = ref_plane[y:y1, x:x1]
+            score = float(np.var(block))
+            if score > best_score:
+                best_score = score
+                best_y = y
+                best_x = x
+
+    # Compute starting linear offset (raster order)
+    start_offset = best_y * w + best_x
+
+    # Now embed per-plane like multi_plane but starting at start_offset (wrap around)
+    for orig_segment_idx, dest_plane_idx in enumerate(segment_indices):
+        segment = segments[orig_segment_idx]
+        plane = local_planes[dest_plane_idx]
+        h, w = plane.shape
+        stego_plane = plane.copy()
+
+        bitmap = np.zeros((h, w), dtype=np.uint8)
+
+        num_bits = min(len(segment), h * w)
+        linear_indices = (np.arange(start_offset, start_offset + num_bits) % (h * w))
+        y_coords = linear_indices // w
+        x_coords = linear_indices % w
+
+        original_pixels = stego_plane[y_coords, x_coords]
+        msg_bits = np.fromiter((int(b) for b in segment[:num_bits]), dtype=np.uint8, count=num_bits)
+
+        stego_pixels = (original_pixels & 0xFE) | msg_bits
+        stego_plane[y_coords, x_coords] = stego_pixels
+
+        xor_values = original_pixels ^ stego_pixels
+        bitmap[y_coords, x_coords] = xor_values
+
+        stego_planes[dest_plane_idx] = stego_plane
+        bitmaps[dest_plane_idx] = bitmap
+        total_used += num_bits
+
+        # advance start_offset by num_bits so next plane begins after previous embedding
+        # if align_across_planes is True we keep the same start_offset for all planes
+        if not align_across_planes:
+            start_offset = (start_offset + num_bits) % (h * w)
+
+    return stego_planes, bitmaps, total_used, segments_lengths, segment_indices
 
 def calculate_entropy(data_array):
     """
@@ -431,49 +596,76 @@ def adaptive_modalities_decomposition(image_array, beta=0.8, nbits=None):
     local_planes = bit_planes[:s]   # 's' planos menos significativos
     global_planes = bit_planes[s:]  # O restante dos planos mais significativos
     
-    return s, global_planes, local_planes
+    return global_planes, local_planes
 
-def create_header(segments_lengths, segment_indices,):
-    index_s = len(segments_lengths)
-    # Formato: header_length, version, index_s, [segments_lengths], [segment_indices]
-    header_format = f">BBB{index_s}H{index_s}H"
-    header_length = struct.calcsize(header_format)
+def create_header(
+    codec: str, 
+    s: int, 
+    segments_lengths: list,
+    segments_indices: list,
+    bitmaps_blob_size: int,
+    width: int,
+    height: int,
+    start_offset: int,
+    align_across_planes: bool
+) -> bytes:
+    """
+    Cria o cabeçalho binário completo e robusto para o codec.
+    """
+    # Mapeia o nome do codec para um código de 1 byte
+    codec_map = {'png': 1, 'j2k': 2, 'jls': 3, 'jxl': 4}
+    codec_id = codec_map.get(codec.lower(), 0)
+    
+    # Converte o booleano para um inteiro (0 ou 1)
+    align_flag = 1 if align_across_planes else 0
 
+    header_format = '>BBBBHHH'
     header_parts = [
-        header_length,
-        1,      # Version
-        index_s,
+        1,  
+        codec_id,
+        s,
+        align_flag,
+        width,
+        height,
+        start_offset
     ]
+
+    # Parte variável: as listas de tamanhos
+    header_format += f'{s}H'  # 's' inteiros para os comprimentos dos segmentos
     header_parts.extend(segments_lengths)
-    header_parts.extend(segment_indices)
 
-    print(f"Header: {header_parts}")
+    header_format += f'{s}B'  # 's' inteiros para os índices dos segmentos
+    header_parts.extend(segments_indices)
 
-    header_bytes = struct.pack(header_format, *header_parts)
-    return header_bytes
+    # Adiciona o tamanho do blob de bitmaps (4 bytes)
+    header_format += 'I'
+    header_parts.append(bitmaps_blob_size)
+    
+    # Empacota tudo numa string de bytes
+    packed_header = struct.pack(header_format, *header_parts)
+    
+    print(f" HEADER:")
+    print(f"   - Versão: {header_parts[0]}")
+    print(f"   - Codec ID: {header_parts[1]} ({codec})")
+    print(f"   - Número de planos locais (s): {header_parts[2]}")
+    print(f"   - Alinhamento entre planos: {'Sim' if align_flag else 'Não'}")
+    print(f"   - Dimensões da imagem: {header_parts[4]}x{header_parts[5]}")
+    print(f"   - Offset inicial de embedding: {header_parts[6]}")
+    print(f"   - Tamanhos dos segmentos: {segments_lengths}")
+    print(f"   - Índices dos segmentos: {segments_indices}")
+    return packed_header
 
-DEBUG_BITMAPS = []
-
-def create_binary_file(filename, header_bytes, stego_compressed, bitmaps_list):
+def create_binary_file(filename, header_bytes, stego_compressed, bitmaps_bytes):
     """
     Salva o arquivo binário simplificado.
-    Estrutura: STGC + header + [bitmaps_compressed] + stego_compressed
+    Estrutura: STGC + header + stego_compressed
     """
-    # Comprime cada bitmap individualmente e concatena
-    bitmaps_compressed = b''
-    for i, bitmap in enumerate(bitmaps_list):
-        bitmap_bytes = bitmap.tobytes()
-        compressed = zlib.compress(bitmap_bytes)
-        bitmaps_compressed += compressed
-        print(f"   - Bitmap {i}: original {len(bitmap_bytes)} bytes, comprimido {len(compressed)} bytes")
-
-    DEBUG_BITMAPS.append(bitmaps_list)
-
     with open(filename, "wb") as f:
-        f.write(b"STGC")                          # Assinatura
-        f.write(header_bytes)                     # Header principal
-        f.write(bitmaps_compressed)               # Bitmaps comprimidos
-        f.write(stego_compressed)                 # Imagem comprimida
+        f.write(b"STGC")           # Assinatura
+        f.write(struct.pack('>I', len(header_bytes)))
+        f.write(header_bytes)      # Header principal
+        f.write(bitmaps_bytes)     # Bitmaps comprimidos
+        f.write(stego_compressed)  # Imagem comprimida
 
     return os.path.getsize(filename)
 
@@ -487,124 +679,247 @@ Header (variable size) - Metadata
   - header_length (2 bytes)
   - version (1 byte)
   - index_s (1 byte)
+  - codec_id (1 byte)
   - segments_lengths (index_s * 2 bytes)
   - segment_indices (index_s * 2 bytes)
-Bitmaps (variable size) - Compressed bitmaps
 Stego Image (variable size) - Compressed stego image
 -------------------------------------------------
 """
 
-
-def extract_binary(filepath):
-    if not os.path.exists(filepath):
-        raise FileNotFoundError(f"O arquivo {filepath} não foi encontrado.")
-        
+def parse_bin_file(filepath: str):
+    """
+    Lê um ficheiro .bin, analisa o cabeçalho e separa todos os blocos de dados.
+    """
+    codec_map = {1: 'png', 2: 'j2k', 3: 'jls', 4: 'jxl'}
+    
     with open(filepath, 'rb') as f:
-        # 1. Ler e Verificar o Número Mágico
-        if f.read(4) != b'STGC':
-            raise ValueError("Formato de arquivo inválido. Assinatura 'STGC' não encontrada.")
+        signature = f.read(4)
+        if signature != b'STGC':
+            raise ValueError("Arquivo inválido ou com assinatura incorreta.")
         
-        # 2. Ler o Tamanho do Cabeçalho
-        header_size_bytes = f.read(1)
-        print(header_size_bytes)
-        header_size = struct.unpack('>B', header_size_bytes)[0]
+        header_length_bytes = f.read(4)
+        header_length = struct.unpack('>I', header_length_bytes)[0]
+        header_data = f.read(header_length)
         
-        # 3. Ler o Bloco do Cabeçalho
-        header_bytes = f.read(header_size - 1)
+        # Análise do cabeçalho
+        base_format = '>BBBBHHH'
+        base_size = struct.calcsize(base_format)
+        base_parts = struct.unpack(base_format, header_data[:base_size])
+        
+        version, codec_id, s, align_flag, width, height, start_offset = base_parts
+        codec = codec_map.get(codec_id, 'unknown')
+        
+        # Tamanhos dos segmentos
+        seg_lengths_format = f'>{s}H'
+        seg_lengths_size = struct.calcsize(seg_lengths_format)
+        seg_lengths_start = base_size
+        seg_lengths_end = seg_lengths_start + seg_lengths_size
+        segments_lengths = list(struct.unpack(seg_lengths_format, header_data[seg_lengths_start:seg_lengths_end]))
+        
+        # Índices dos segmentos
+        seg_indices_format = f'>{s}B'
+        seg_indices_size = struct.calcsize(seg_indices_format)
+        seg_indices_start = seg_lengths_end
+        seg_indices_end = seg_indices_start + seg_indices_size
+        segments_indices = list(struct.unpack(seg_indices_format, header_data[seg_indices_start:seg_indices_end]))
+        
+        # Tamanho do blob de bitmaps
+        bitmap_size_format = '>I'
+        bitmap_size_start = seg_indices_end
+        bitmap_size_end = bitmap_size_start + struct.calcsize(bitmap_size_format)
+        bitmaps_blob_size = struct.unpack(bitmap_size_format, header_data[bitmap_size_start:bitmap_size_end])[0]
+        
+        # Lê o blob de bitmaps
+        bitmaps_data = f.read(bitmaps_blob_size)
+        
+        # Lê o restante como dados da imagem stego comprimida
+        stego_image_data = f.read()
 
-        # 4. Analisar (Parse) o Bloco do Cabeçalho
-        offset = 0
-        
-        # Parte fixa inicial: versão e index_s
-        version, index_s = struct.unpack('>BB', header_bytes[offset:offset+2])
-        offset += 2
-        
-        # Usa 'index_s' para ler as listas de 2 bytes (short, 'H')
-        list_format = f'>{index_s}H'
-        list_size = struct.calcsize(list_format)
-        
-        segments_lengths = list(struct.unpack(list_format, header_bytes[offset:offset+list_size]))
-        offset += list_size
-        
-        segment_indices = list(struct.unpack(list_format, header_bytes[offset:offset+list_size]))
-        offset += list_size
-        
-        # Guarda os metadados num dicionário
         metadata = {
             'version': version,
-            's': index_s,
+            'codec': codec,
+            's': s,
+            'align_flag': align_flag,
+            'width': width,
+            'height': height,
+            'start_offset': start_offset,
             'segments_lengths': segments_lengths,
-            'segment_indices': segment_indices,
+            'segments_indices': segments_indices
         }
-        
-        print(f"Metadata extraída: {metadata}")
-        
-        # 5. Ler os Bitmaps Comprimidos
 
-        bitmaps_data = []
-        for i in range(index_s):
-            bitmap_length = segments_lengths[i]
-            bitmap_compressed = f.read(bitmap_length)
-            bitmap_decompressed = zlib.decompress(bitmap_compressed)
-            bitmaps_data.append(bitmap_decompressed)
-        
+    return metadata, bitmaps_data, stego_image_data
 
-
-        # DEBUG: verificar se todos os bitmaps foram lidos corretamente
-        for i, bitmap in enumerate(bitmaps_data):
-            print(f"   > Bitmap {i}: {bitmap[:50]}\n   > {len(bitmap)} bytes")
-            print(f"   > Bitmap original {i}: {DEBUG_BITMAPS[i][:50]}\n   > {len(DEBUG_BITMAPS[i])} bytes")
-        
-
-
-
-
-        print(f"   > Total de bitmaps lidos: {len(bitmaps_data)}")
-        print("✅ Arquivo STGC lido e analisado com sucesso.")
-
-        return {
-            'metadata': metadata,
-            #'bitmaps_data': bitmaps_data,
-            #'stego_image_data': stego_image_data
-        }
+def decode_message(stego_planes, bitmaps, metadata):
+    """
+    Extrai a mensagem escondida dos planos stego usando os bitmaps.
+    """
+    s = metadata['s']
+    segments = [''] * s
+    total_bits = 0
     
+    # Percorre os planos na ordem correta
+    for i, plane_idx in enumerate(metadata['segments_indices']):
+        stego_plane = stego_planes[plane_idx]
+        bitmap = bitmaps[plane_idx]
+        num_bits = metadata['segments_lengths'][plane_idx]
+        
+        # Extrai apenas onde o bitmap indica mudanças (1s)
+        changes = np.nonzero(bitmap.ravel())[0][:num_bits]
+        linear_stego = stego_plane.ravel()
+        
+        # Extrai os bits LSB onde houve mudanças
+        segment_bits = linear_stego[changes] & 1
+        segments[plane_idx] = ''.join(str(bit) for bit in segment_bits)
+        total_bits += num_bits
+    
+    # Junta todos os segmentos na ordem correta
+    all_bits = ''.join(segments)
+    
+    # Converte bits em bytes e depois em string
+    message_bytes = []
+    for i in range(0, len(all_bits), 8):
+        byte_bits = all_bits[i:i+8]
+        if len(byte_bits) == 8:  # ignora bits incompletos
+            byte_val = int(byte_bits, 2)
+            message_bytes.append(byte_val)
+    
+    message = bytes(message_bytes).decode('utf-8', errors='replace')
+    return message
+
+def extract_local_planes(stego_array, s):
+    """
+    Extrai os s planos menos significativos de um array.
+    """
+    return [(stego_array >> i) & 1 for i in range(s)]
+
+def decode_bin(filepath: str, output_prefix: str = "decoded"):
+    """
+    Decodifica um arquivo .bin, extraindo a mensagem e recuperando a imagem.
+
+    Args:
+        filepath: Caminho do arquivo .bin
+        output_prefix: Prefixo para os arquivos de saída
+        
+    Returns:
+        tuple: (mensagem extraída, imagem recuperada)
+    """
+    print(f"🔄 Decodificando arquivo: {filepath}")
+    
+    # 1. Ler e analisar o arquivo binário
+    metadata, bitmaps, stego_array = parse_bin_file(filepath)
+    s = metadata['s']
+    codec = metadata['codec']
+    print(f"   - Codec detectado: {codec}")
+    print(f"   - Planos locais (s): {s}")
+
+    # 2. Descomprimir os dados
+    stego_decompressed = decompress_image(stego_array, codec)
+    stego_array = stego_decompressed
+
+    # 3. Descomprimir os bitmaps usando zlib e transformar em array
+    bitmaps_array = np.frombuffer(zlib.decompress(bitmaps), dtype=np.uint8)
+    bitmaps = np.split(bitmaps_array, s)
+
+    # 4. Extrair os planos locais da imagem stego
+    local_planes = extract_local_planes(stego_array, s)
+
+    # 5. Extrair a mensagem usando os bitmaps
+    print("🔄 Extraindo mensagem...")
+    message = decode_message(local_planes, bitmaps, metadata)
+
+    # 6. Salvar os resultados
+    message_file = f"{output_prefix}_mensagem.txt"
+    with open(message_file, 'w', encoding='utf-8') as f:
+        f.write(message)
+    print(f"✅ Mensagem salva em: {message_file}")
+
+    # 7. Criar e salvar o DICOM
+    print("🔄 Criando arquivo DICOM...")
+    ds = create_dicom(stego_array)
+    dicom_file = f"{output_prefix}_imagem.dcm"
+    save_dicom(ds, dicom_file)
+    
+    return message, stego_array
+
+
+
 
 def main():
-    name = "pe"
-    dicom_data = load_dicom_image(f"images/{name}.dcm")
-    image_array = dicom_data.pixel_array
-    bits_stored = dicom_data.BitsStored
-    message = (
-        "Mensagem longa para testar o algoritmo de decomposição adaptativa em DICOM. \n"
-        "Esta mensagem deve ser suficientemente grande para preencher vários planos de bits e \n"
-        "permitir a avaliação do algoritmo de embaralhamento e distribuição de segmentos entre os \n"
-        "planos locais. Logo será possível verificar se a mensagem é corretamente embutida e \n"
-        "recuperada. O esperado é que a mensagem seja embutida e recuperada corretamente. Sempre \n"
-        "que a mensagem seja embutida e recuperada corretamente.\n"
-        "\n"
-        "Mensagem longa para testar o algoritmo de decomposição adaptativa em DICOM. \n"
-        "Esta mensagem deve ser suficientemente grande para preencher vários planos de bits e \n"
-        "permitir a avaliação do algoritmo de embaralhamento e distribuição de segmentos entre os \n"
-        "planos locais. Logo será possível verificar se a mensagem é corretamente embutida e \n"
-        "recuperada. O esperado é que a mensagem seja embutida e recuperada corretamente. Sempre \n"
-        "que a mensagem seja embutida e recuperada corretamente."
-    )
-    message_bits = message_to_bits(message)
+    # Exemplo simples de uso do código
+    # 1. Carregar uma imagem DICOM
+    input_dicom_file = "images/pe.dcm"  # Substitua pelo caminho do seu arquivo DICOM
+    if not os.path.exists(input_dicom_file):
+        print(f"❌ Arquivo {input_dicom_file} não encontrado.")
+        print("Por favor, forneça o caminho correto para um arquivo DICOM de entrada.")
+        return
 
-    index_s, global_modality, local_modality = adaptive_modalities_decomposition(image_array, beta=0.5, nbits=bits_stored)
-    local_stego, bitmaps, total_used, segments_lengths, segment_indices = lsb_embed_multi_plane(local_modality, message_bits)
-    image_stego = merge_modalities(global_modality, local_stego)
+    try:
+        # Carrega a imagem DICOM
+        print("🔄 Carregando imagem DICOM...")
+        dicom_data = load_dicom_image(input_dicom_file)
+        image_array = dicom_data.pixel_array
 
-    
-    stego_compressed = compress_image(image_stego, codec='jxl')
+        # 2. Preparar uma mensagem de exemplo
+        message = "Mensagem de teste para esteganografia!"
+        message_bits = message_to_bits(message)
 
-    # Cria header sem alturas dos bitmaps
-    header_bytes = create_header(segments_lengths, segment_indices)
-    binary_size = create_binary_file(f"output/{name}.stgc", header_bytes, stego_compressed, bitmaps)
+        # 3. Decompor a imagem em planos
+        print("🔄 Decompondo imagem em planos...")
+        global_planes, local_planes = adaptive_modalities_decomposition(image_array, beta=0.4)
+        s = len(local_planes)
+        print(f"   - Número de planos locais (s): {s}")
 
-    print(f"   > Tamanho do arquivo binário: {binary_size / (1024 * 1024):<.2f} MB")
+        # 4. Embutir a mensagem usando o método híbrido
+        print("🔄 Embutindo mensagem usando método híbrido...")
+        stego_planes, bitmaps, total_used, segments_lengths, segment_indices = lsb_embed_block_then_multiplane(
+            local_planes, message_bits, search_block_size=16
+        )
 
-    extract_binary(f"output/{name}.stgc")
+        # 5. Combinar os planos novamente
+        print("🔄 Reconstruindo imagem...")
+        stego_image = merge_modalities(global_planes, stego_planes)
+
+        # 6. Comprimir a imagem usando um codec
+        codec = 'jxl'  # pode ser 'png', 'j2k', 'jls' ou 'jxl'
+        compressed_bytes = compress_image(stego_image, codec)
+
+        # 7. Comprimindo os bitmaps
+        print("🔄 Comprimindo bitmaps...")
+        all_bitmaps_array = np.stack(bitmaps, axis=0)
+        bitmaps_blob = zlib.compress(all_bitmaps_array.tobytes())
+        bitmaps_blob_size = len(bitmaps_blob)
+
+        # 7. Criar cabeçalho e arquivo binário
+        print("🔄 Criando arquivo binário...")
+        height, width = stego_image.shape
+        header = create_header(
+            codec=codec,
+            s=s,
+            segments_lengths=segments_lengths,
+            segments_indices=segment_indices,
+            bitmaps_blob_size=bitmaps_blob_size,
+            width=width,
+            height=height,
+            start_offset=0,
+            align_across_planes=False
+        )
+
+        output_file = "output/saida_exemplo.bin"
+        file_size = create_binary_file(output_file, header, compressed_bytes, bitmaps_blob)
+        print(f"✅ Arquivo gerado com sucesso: {output_file} ({file_size} bytes)")
+
+    except Exception as e:
+        print(f"❌ Erro durante a execução: {str(e)}")
+        raise
+
+    try:
+        # 8. Decodificar o arquivo gerado
+        decoded_message, recovered_image = decode_bin(output_file, output_prefix="output/decoded")
+        print(f"✅ Mensagem decodificada: {decoded_message}")
+
+    except Exception as e:
+        print(f"❌ Erro durante a decodificação: {str(e)}")
+        raise
 
 # Exemplo de uso do decode
 if __name__ == "__main__":
