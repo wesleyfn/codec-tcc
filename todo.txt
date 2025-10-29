@@ -1,0 +1,3 @@
+
+DICOMs
+DX: https://www.kaggle.com/datasets/ed20b047/dicom-files
