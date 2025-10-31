@@ -4,8 +4,6 @@ import pydicom
 from skimage.metrics import structural_similarity as ssim, peak_signal_noise_ratio as psnr, mean_squared_error as mse 
 
 
-
-
 def load_dicom_as_float(path):
     """Lê um arquivo DICOM e normaliza o pixel array para [0,1]."""
     ds = pydicom.dcmread(path)
