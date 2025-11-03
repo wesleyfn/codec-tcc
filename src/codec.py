@@ -577,6 +577,7 @@ def run_steganography(input_dicom_file, output_dir, base_filename, beta, block_s
     Hides the original DICOM metadata within the image pixels.
     Creates a stego container with clean metadata.
     """
+    print('\n')
     logger.info(f"STARTING STEGANOGRAPHY ENCODING\n{'='*100}")
     logger.info(f"Parameters: Beta={beta}, BlockSize={block_size}, Threshold={threshold_factor}, Codec={codec}")
     
@@ -736,11 +737,11 @@ def main():
             
             # Verify the restoration
             original_dicom = pydicom.dcmread(input_dicom_file)
-            logger.info(f"VERIFICATION RESULTS\n{'='*50}")
+            logger.info(f"VERIFICATION RESULTS\n{'='*100}")
             logger.info(f"Images match: {np.array_equal(original_dicom.pixel_array, restored_image)}")
             logger.info(f"Original PatientID: {getattr(original_dicom, 'PatientID', 'N/A')}")
             logger.info(f"Restored PatientID: {getattr(restored_dicom, 'PatientID', 'N/A')}")
-            print("="*50)
+            print('\n')
 
     except Exception as e:
         logger.error("An unexpected error occurred during execution.", exc_info=True)
