@@ -708,7 +708,7 @@ def main():
     try:
         # --- Parameters ---
         input_dicom_file = "images/dx_8b/111.dcm"
-        input_dicom_file = "images/mr/666.dcm"
+        input_dicom_file = "images/mr_16b/666.dcm"
         output_dir = "output"
         beta = 0.4
         block_size = 4
