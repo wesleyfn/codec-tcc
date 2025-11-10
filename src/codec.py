@@ -214,7 +214,7 @@ def compress_image_data(image_array: np.ndarray, codec: str) -> bytes:
             temp_input_png = os.path.join(td, 'in.png')
             temp_output_jxl = os.path.join(td, 'out.jxl')
             Image.fromarray(image_array).save(temp_input_png)
-            cmd = ['cjxl', temp_input_png, temp_output_jxl, '-d', '0', '-e', '7']
+            cmd = ['cjxl', temp_input_png, temp_output_jxl, '-d', '0', '-e', '4']
             try:
                 subprocess.run(cmd, check=True, capture_output=True)
                 with open(temp_output_jxl, 'rb') as f:
