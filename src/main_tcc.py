@@ -1,6 +1,3 @@
-# main_tcc.py
-# (Salve na mesma pasta que codec.py)
-
 import os
 import glob
 import time
@@ -8,14 +5,13 @@ import pydicom
 import numpy as np
 import pandas as pd
 import logging
-import codec  # Importa seu script como uma biblioteca
-import zlib
+import codec
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- Configuração dos Logs ---
 logging.basicConfig(
     level=logging.INFO,
-    format="%(relativeCreated)dms\t [ %(levelname)s ]   %(message)s",
+    format="%(relativeCreated)ds\t [ %(levelname)s ]   %(message)s",
     handlers=[
         logging.StreamHandler()  # Imprime logs no console
     ]
@@ -25,7 +21,7 @@ logger = logging.getLogger(__name__)
 # --- PARÂMETROS DO EXPERIMENTO ---
 DATASET_DIR = 'images/'
 OUTPUT_DIR = 'tcc_results/'
-# Codecs para comparar (apenas JXL com esforço 7 por enquanto)
+# Codecs para comparar
 CODECS_TO_TEST = ['jxl', 'j2k', 'jls', 'png']
 BETAS_TO_TEST = [0.4, 0.8]                     # Valores de Beta para variar
 BLOCK_SIZE = 4
@@ -93,8 +89,11 @@ def process_single_image(img_path):
             # 4. Análise de Capacidade e Decomposição
             start_decomposition = time.time()
             global_planes, local_planes = codec.decompose_image_adaptively(original_array, beta=beta)
-            capacity_map, allowed_indices = codec.create_embedding_capacity_map(
-                original_array, block_size=BLOCK_SIZE, threshold_factor=THRESHOLD_FACTOR
+            
+            # USAR A NOVA FUNÇÃO DE CAPACIDADE DINÂMICA
+            capacity_map, allowed_indices = codec.create_capacity_map_dynamic(
+                original_array, required_bits=len(message_bits), 
+                block_size=BLOCK_SIZE, threshold_factor=THRESHOLD_FACTOR
             )
             stego_capacity_bits = len(allowed_indices)
             decomposition_time = time.time() - start_decomposition
@@ -105,7 +104,7 @@ def process_single_image(img_path):
                 
             # 5. Embutimento da Esteganografia
             start_embedding = time.time()
-            stego_planes, embedding_map, _, segments_lengths, segment_indices = codec.embed_message_in_planes(
+            stego_planes, segments_lengths, segment_indices, used_indices, flip_bits = codec.embed_message_in_planes(
                 local_planes, message_bits, allowed_indices, original_array.shape, 
                 start_offset=0, align_across_planes=False
             )
@@ -119,6 +118,9 @@ def process_single_image(img_path):
             start_metrics = time.time()
             stego_psnr, stego_ssim = calculate_metrics(original_array, stego_image_array)
             metrics_time = time.time() - start_metrics
+
+            # USAR A NOVA FUNÇÃO OTIMIZADA DE BITMAP_BLOB
+            bitmaps_blob = codec.create_optimized_bitmap_blob(used_indices, flip_bits)
 
             # 7. Iterar sobre os CODECS
             for codec_name in CODECS_TO_TEST:
@@ -138,16 +140,16 @@ def process_single_image(img_path):
                 
                 # Tempo de empacotamento
                 start_packaging = time.time()
-                bitmaps_blob = zlib.compress(embedding_map.tobytes(), level=9)
                 
-                header = codec.create_steganography_header(
+                # USAR A NOVA FUNÇÃO DE HEADER QUE INCLUI stego_image_size
+                header_bytes = codec.create_steganography_header_bytes(
                     codec=codec_name, s=len(local_planes), segments_lengths=segments_lengths,
-                    segments_indices=segment_indices, bitmaps_blob_size=len(bitmaps_blob),
+                    segments_indices=segment_indices, stego_image_size=len(compressed_bytes),
                     width=original_array.shape[1], height=original_array.shape[0], start_offset=0,
                     align_across_planes=False, block_size=BLOCK_SIZE, threshold_factor=THRESHOLD_FACTOR
                 )
                 
-                final_bin_size = codec.create_steganography_container(bin_path, header, bitmaps_blob, compressed_bytes)
+                final_bin_size = codec.create_steganography_container(bin_path, header_bytes, bitmaps_blob, compressed_bytes)
                 end_packaging = time.time()
                 packaging_time = end_packaging - start_packaging
                 
@@ -157,85 +159,132 @@ def process_single_image(img_path):
                 # 9. Medir Decodificação
                 start_dec = time.time()
                 
-                restored_dicom, _, restored_image = codec.decode_steganography_container(
-                    bin_path, 
-                    output_prefix=os.path.join(OUTPUT_DIR, f"{base_filename}_decoded")
-                )
-                
-                end_dec = time.time()
-                decoding_time = end_dec - start_dec
-                
-                # 10. Verificação Final (Reversibilidade)
-                reversibility_check = np.array_equal(original_array, restored_image)
-                
-                # 11. Calcular Métricas Finais
-                cr = original_size / final_bin_size
-                bpp = (final_bin_size * 8) / (original_array.shape[0] * original_array.shape[1])
-                
-                # 12. Calcular taxa de compressão e eficiência
-                uncompressed_size = original_array.size * (bits_stored / 8)  # Tamanho não comprimido em bytes
-                compression_ratio_vs_raw = uncompressed_size / final_bin_size
-                
-                # Eficiência de embedding (bits por byte comprimido)
-                embedding_efficiency = len(message_bits) / final_bin_size if final_bin_size > 0 else 0
-                
-                # 13. Calcular overhead
-                compressed_image_size = len(compressed_bytes)
-                header_size = len(header)
-                bitmaps_size = len(bitmaps_blob)
-                total_container_size = final_bin_size
-                
-                # Overhead como porcentagem do tamanho total
-                overhead_percentage = ((header_size + bitmaps_size) / total_container_size) * 100 if total_container_size > 0 else 0
-                
-                # Overhead relativo à imagem comprimida
-                overhead_vs_compressed = ((header_size + bitmaps_size) / compressed_image_size) * 100 if compressed_image_size > 0 else 0
+                try:
+                    restored_dicom, extracted_metadata, restored_image = codec.decode_steganography_container(
+                        bin_path, 
+                        output_prefix=os.path.join(OUTPUT_DIR, f"{base_filename}_decoded")
+                    )
+                    
+                    end_dec = time.time()
+                    decoding_time = end_dec - start_dec
+                    
+                    # 10. Verificação Final (Reversibilidade)
+                    reversibility_check = np.array_equal(original_array, restored_image)
+                    
+                    # 11. Calcular Métricas Finais
+                    cr = original_size / final_bin_size
+                    bpp = (final_bin_size * 8) / (original_array.shape[0] * original_array.shape[1])
+                    
+                    # 12. Calcular taxa de compressão e eficiência
+                    uncompressed_size = original_array.size * (bits_stored / 8)  # Tamanho não comprimido em bytes
+                    compression_ratio_vs_raw = uncompressed_size / final_bin_size
+                    
+                    # Eficiência de embedding (bits por byte comprimido)
+                    embedding_efficiency = len(message_bits) / final_bin_size if final_bin_size > 0 else 0
+                    
+                    # 13. Calcular overhead
+                    compressed_image_size = len(compressed_bytes)
+                    header_size = len(header_bytes)
+                    bitmaps_size = len(bitmaps_blob)
+                    total_container_size = final_bin_size
+                    
+                    # Overhead como porcentagem do tamanho total
+                    overhead_percentage = ((header_size + bitmaps_size) / total_container_size) * 100 if total_container_size > 0 else 0
+                    
+                    # Overhead relativo à imagem comprimida
+                    overhead_vs_compressed = ((header_size + bitmaps_size) / compressed_image_size) * 100 if compressed_image_size > 0 else 0
 
-                # 14. Coletar resultados
-                results.append({
-                    'Image_File': os.path.basename(img_path),
-                    'Modality': modality,
-                    'Bits_Stored': bits_stored,
-                    'Shape': f"{shape[0]}x{shape[1]}",
-                    'Original_Size_Bytes': original_size,
-                    'Metadata_Size_Bytes': metadata_size_bytes,
-                    'Parameter_Beta': beta,
-                    'Parameter_Codec': codec_name,
-                    'Parameter_Block_Size': BLOCK_SIZE,
-                    'Parameter_Threshold_Factor': THRESHOLD_FACTOR,
-                    'Stego_Capacity_Bits': stego_capacity_bits,
-                    'Message_Size_Bits': len(message_bits),
-                    'Stego_Image_PSNR_dB': stego_psnr,
-                    'Stego_Image_SSIM': stego_ssim,
-                    'Final_Bin_Size_Bytes': final_bin_size,
-                    'Compressed_Image_Size_Bytes': compressed_image_size,
-                    'Header_Size_Bytes': header_size,
-                    'Bitmaps_Size_Bytes': bitmaps_size,
-                    'CR': cr,
-                    'Bpp': bpp,
-                    'Compression_Ratio_vs_Raw': compression_ratio_vs_raw,
-                    'Embedding_Efficiency': embedding_efficiency,
-                    'Available_Capacity_Utilization': len(message_bits) / stego_capacity_bits if stego_capacity_bits > 0 else 0,
-                    # Métricas de tempo detalhadas
-                    'Load_Time_s': load_time,
-                    'Metadata_Extraction_Time_s': metadata_time,
-                    'Decomposition_Time_s': decomposition_time,
-                    'Embedding_Time_s': embedding_time,
-                    'Merge_Time_s': merge_time,
-                    'Metrics_Calculation_Time_s': metrics_time,
-                    'Compression_Time_s': compression_time,
-                    'Packaging_Time_s': packaging_time,
-                    'Total_Encoding_Time_s': total_encoding_time,
-                    'Decoding_Time_s': decoding_time,
-                    # Métricas de overhead
-                    'Overhead_Percentage': overhead_percentage,
-                    'Overhead_vs_Compressed_Percentage': overhead_vs_compressed,
-                    'Reversibility_Check': reversibility_check
-                })
-                
-                logger.info(f"Concluído: {os.path.basename(img_path)}, Codec: {codec_name.upper()}, Beta: {beta}")
-                logger.info(f"Tempos - Compressão: {compression_time:.3f}s, Empacotamento: {packaging_time:.3f}s, Total: {total_encoding_time:.3f}s")
-                logger.info(f"Overhead: {overhead_percentage:.2f}% do container, {overhead_vs_compressed:.2f}% vs imagem comprimida")
+                    # 14. Coletar resultados
+                    results.append({
+                        'Image_File': os.path.basename(img_path),
+                        'Modality': modality,
+                        'Bits_Stored': bits_stored,
+                        'Shape': f"{shape[0]}x{shape[1]}",
+                        'Original_Size_Bytes': original_size,
+                        'Metadata_Size_Bytes': metadata_size_bytes,
+                        'Parameter_Beta': beta,
+                        'Parameter_Codec': codec_name,
+                        'Parameter_Block_Size': BLOCK_SIZE,
+                        'Parameter_Threshold_Factor': THRESHOLD_FACTOR,
+                        'Stego_Capacity_Bits': stego_capacity_bits,
+                        'Message_Size_Bits': len(message_bits),
+                        'Stego_Image_PSNR_dB': stego_psnr,
+                        'Stego_Image_SSIM': stego_ssim,
+                        'Final_Bin_Size_Bytes': final_bin_size,
+                        'Compressed_Image_Size_Bytes': compressed_image_size,
+                        'Header_Size_Bytes': header_size,
+                        'Bitmaps_Size_Bytes': bitmaps_size,
+                        'CR': cr,
+                        'Bpp': bpp,
+                        'Compression_Ratio_vs_Raw': compression_ratio_vs_raw,
+                        'Embedding_Efficiency': embedding_efficiency,
+                        'Available_Capacity_Utilization': len(message_bits) / stego_capacity_bits if stego_capacity_bits > 0 else 0,
+                        # Métricas de tempo detalhadas
+                        'Load_Time_s': load_time,
+                        'Metadata_Extraction_Time_s': metadata_time,
+                        'Decomposition_Time_s': decomposition_time,
+                        'Embedding_Time_s': embedding_time,
+                        'Merge_Time_s': merge_time,
+                        'Metrics_Calculation_Time_s': metrics_time,
+                        'Compression_Time_s': compression_time,
+                        'Packaging_Time_s': packaging_time,
+                        'Total_Encoding_Time_s': total_encoding_time,
+                        'Decoding_Time_s': decoding_time,
+                        # Métricas de overhead
+                        'Overhead_Percentage': overhead_percentage,
+                        'Overhead_vs_Compressed_Percentage': overhead_vs_compressed,
+                        'Reversibility_Check': reversibility_check
+                    })
+                    
+                    logger.info(f"Concluído: {os.path.basename(img_path)}, Codec: {codec_name.upper()}, Beta: {beta}")
+                    logger.info(f"Tempos - Compressão: {compression_time:.3f}s, Empacotamento: {packaging_time:.3f}s, Total: {total_encoding_time:.3f}s")
+                    logger.info(f"Overhead: {overhead_percentage:.2f}% do container, {overhead_vs_compressed:.2f}% vs imagem comprimida")
+                    logger.info(f"Reversibilidade: {reversibility_check}")
+                    
+                except Exception as decode_error:
+                    logger.error(f"Erro na decodificação para {base_filename}: {decode_error}")
+                    # Adicionar resultado mesmo com erro de decodificação para análise
+                    results.append({
+                        'Image_File': os.path.basename(img_path),
+                        'Modality': modality,
+                        'Bits_Stored': bits_stored,
+                        'Shape': f"{shape[0]}x{shape[1]}",
+                        'Original_Size_Bytes': original_size,
+                        'Metadata_Size_Bytes': metadata_size_bytes,
+                        'Parameter_Beta': beta,
+                        'Parameter_Codec': codec_name,
+                        'Parameter_Block_Size': BLOCK_SIZE,
+                        'Parameter_Threshold_Factor': THRESHOLD_FACTOR,
+                        'Stego_Capacity_Bits': stego_capacity_bits,
+                        'Message_Size_Bits': len(message_bits),
+                        'Stego_Image_PSNR_dB': stego_psnr,
+                        'Stego_Image_SSIM': stego_ssim,
+                        'Final_Bin_Size_Bytes': final_bin_size,
+                        'Compressed_Image_Size_Bytes': compressed_image_size,
+                        'Header_Size_Bytes': header_size,
+                        'Bitmaps_Size_Bytes': bitmaps_size,
+                        'CR': cr,
+                        'Bpp': bpp,
+                        'Compression_Ratio_vs_Raw': compression_ratio_vs_raw,
+                        'Embedding_Efficiency': embedding_efficiency,
+                        'Available_Capacity_Utilization': len(message_bits) / stego_capacity_bits if stego_capacity_bits > 0 else 0,
+                        # Métricas de tempo detalhadas
+                        'Load_Time_s': load_time,
+                        'Metadata_Extraction_Time_s': metadata_time,
+                        'Decomposition_Time_s': decomposition_time,
+                        'Embedding_Time_s': embedding_time,
+                        'Merge_Time_s': merge_time,
+                        'Metrics_Calculation_Time_s': metrics_time,
+                        'Compression_Time_s': compression_time,
+                        'Packaging_Time_s': packaging_time,
+                        'Total_Encoding_Time_s': total_encoding_time,
+                        'Decoding_Time_s': 0,  # Falhou na decodificação
+                        # Métricas de overhead
+                        'Overhead_Percentage': overhead_percentage,
+                        'Overhead_vs_Compressed_Percentage': overhead_vs_compressed,
+                        'Reversibility_Check': False,
+                        'Decode_Error': str(decode_error)
+                    })
 
     except Exception as e:
         logger.error(f"Falha ao processar {img_path}: {e}")
@@ -291,10 +340,15 @@ def run_experiments_parallel(max_workers=2):
         logger.info(f"Tempo total: {total_time:.2f}s")
         logger.info(f"Resultados salvos em: {csv_path}")
         logger.info(f"Total de resultados: {len(all_results)}")
+        
+        # Estatísticas básicas
+        successful = df[df['Reversibility_Check'] == True].shape[0] if 'Reversibility_Check' in df.columns else 0
+        failed = len(all_results) - successful
+        logger.info(f"Sucessos: {successful}, Falhas: {failed}")
         logger.info(f"{'='*50}")
     else:
         logger.error("Nenhum resultado foi gerado!")
 
 if __name__ == "__main__":
     # Opção 1: Paralelismo com threads (mais seguro)
-    run_experiments_parallel(max_workers=2)
+    run_experiments_parallel(max_workers=1)
