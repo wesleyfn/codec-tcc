@@ -19,7 +19,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- PARÂMETROS DO EXPERIMENTO ---
-DATASET_DIR = 'images/'
+DATASET_DIR = '../images/'
 OUTPUT_DIR = 'tcc_results/'
 # Codecs para comparar
 CODECS_TO_TEST = ['jxl', 'j2k', 'jls', 'png']
@@ -88,7 +88,7 @@ def process_single_image(img_path):
             
             # 4. Análise de Capacidade e Decomposição
             start_decomposition = time.time()
-            global_planes, local_planes = codec.decompose_image_adaptively(original_array, beta=beta)
+            global_planes, local_planes, bits_per_pixel = codec.adaptive_modalities_decomposition(original_array, beta=beta)
             
             # USAR A NOVA FUNÇÃO DE CAPACIDADE DINÂMICA
             capacity_map, allowed_indices = codec.create_capacity_map_dynamic(
@@ -111,7 +111,7 @@ def process_single_image(img_path):
             embedding_time = time.time() - start_embedding
             
             start_merge = time.time()
-            stego_image_array = codec.merge_bit_planes(global_planes, stego_planes)
+            stego_image_array = codec.merge_global_local_planes(global_planes, stego_planes, original_array.dtype)
             merge_time = time.time() - start_merge
             
             # 6. Calcular métricas da imagem intermediária
@@ -146,7 +146,8 @@ def process_single_image(img_path):
                     codec=codec_name, s=len(local_planes), segments_lengths=segments_lengths,
                     segments_indices=segment_indices, stego_image_size=len(compressed_bytes),
                     width=original_array.shape[1], height=original_array.shape[0], start_offset=0,
-                    align_across_planes=False, block_size=BLOCK_SIZE, threshold_factor=THRESHOLD_FACTOR
+                    align_across_planes=False, block_size=BLOCK_SIZE, threshold_factor=THRESHOLD_FACTOR,
+                    bits_per_pixel=bits_per_pixel
                 )
                 
                 final_bin_size = codec.create_steganography_container(bin_path, header_bytes, bitmaps_blob, compressed_bytes)

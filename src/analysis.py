@@ -21,7 +21,7 @@ df['Compression_Efficiency_Bytes'] = (df['Original_Size_Bytes'] - df['Compressed
 df = df.sort_values(by='Bpp_Comprimido', ascending=False)
 
 # Ordernar Modalidades
-modality_order = ['dx_8b', 'dx_16b', 'mr_16b']
+modality_order = ['dx_8b', 'dx_16b', 'mg_16b']
 df['Modality'] = pd.Categorical(df['Modality'], categories=modality_order, ordered=True)
 
 # Renomear codecs para melhor visualização
@@ -36,7 +36,7 @@ df['Parameter_Codec'] = df['Parameter_Codec'].replace({
 df['Modality'] = df['Modality'].cat.rename_categories({
     'dx_8b': 'DX_8',
     'dx_16b': 'DX_16', 
-    'mr_16b': 'MG_16',
+    'mg_16b': 'MG_16',
 })
 
 
@@ -54,8 +54,8 @@ figure = sns.catplot(
     hue='Modality', 
     alpha=0.8, 
     kind='bar',
-    legend=True, 
     aspect=1.8,
+    legend=True, 
     legend_out=False,
     palette=['#f03c02', '#a30006', '#601848'],
     errorbar=('sd')
@@ -84,52 +84,164 @@ plt.xlabel('Eficiência de Compressão (%)')
 plt.ylabel('Codec')
 plt.legend(title='Modalidade')
 
-#####
-
-# Preparar dados para o gráfico de desempenho computacional
-df_time = df.melt(
-    id_vars=['Parameter_Codec', 'Modality'], 
-    value_vars=['Total_Encoding_Time_s', 'Decoding_Time_s'],
-    var_name='Tipo de Tempo',
-    value_name='Tempo (s)'
-)
-
-df_time['Tipo de Tempo'] = df_time['Tipo de Tempo'].replace({
-    'Total_Encoding_Time_s': 'Codificação',
-    'Decoding_Time_s': 'Decodificação'
-})
-
-# Criar uma nova coluna para o hue, combinando Modalidade e Tipo de Tempo
-df_time['Group'] = df_time['Modality'].astype(str) + ' - ' + df_time['Tipo de Tempo']
-
-# Ordenar os grupos para uma melhor visualização na legenda
-modalities = df['Modality'].cat.categories
-time_types = ['Codificação', 'Decodificação']
-hue_order = [f'{mod} - {time}' for mod in modalities for time in time_types]
-
-# Gráfico de Desempenho Computacional Unificado
-time_figure = sns.catplot(
-    data=df_time,
-    x='Tempo (s)',
-    y='Parameter_Codec',
-    hue='Group',
-    hue_order=hue_order,
-    kind='bar',
-    aspect=1.8,
-    height=6,
-    palette='Paired',
-    errorbar=None,
-    legend_out=False
-)
-
-time_figure.set_axis_labels('Tempo (s)', 'Codec')
-time_figure.legend.set_title('Modalidade e Operação')
-time_figure.fig.suptitle('Desempenho Computacional por Codec, Modalidade e Operação', y=1.03, size=14)
-time_figure.tight_layout()
+print("\n--- Tabela de BPP Comprimido ---")
+bpp_table = df.groupby(['Parameter_Codec', 'Modality'])['Bpp_Comprimido'].agg(['mean', 'std']).unstack()
+print(bpp_table)
 
 plt.show()
 
-#####
 
 
 
+# --- Gráfico e Tabela de Tempo de Codificação ---
+
+encoding_data = df.groupby(['Parameter_Codec', 'Modality'])['Total_Encoding_Time_s'].agg(['mean', 'std']).reset_index()
+
+figure = sns.catplot(
+    data=df,
+    x='Total_Encoding_Time_s',
+    y='Parameter_Codec',
+    hue='Modality',
+    alpha=0.8,
+    kind='bar',
+    aspect=1.8,
+    legend=True,
+    legend_out=False,
+    palette=['#f03c02', '#a30006', '#601848'],
+    errorbar=('sd')
+)
+plt.xlabel('Tempo de Codificação (s)')
+plt.ylabel('Codec')
+plt.legend(title='Modalidade')
+
+print("\n--- Tabela de Tempo Médio de Codificação (s) ---")
+encoding_table = encoding_data.pivot(index='Parameter_Codec', columns='Modality', values='mean')
+print(encoding_table)
+
+plt.show()
+
+# --- Gráfico e Tabela de Tempo de Decodificação ---
+
+decoding_data = df.groupby(['Parameter_Codec', 'Modality'])['Decoding_Time_s'].agg(['mean', 'std']).reset_index()
+
+c = sns.catplot(
+    data=df,
+    x='Decoding_Time_s',
+    y='Parameter_Codec',
+    hue='Modality',
+    alpha=0.8,
+    kind='bar',
+    aspect=1.8,
+    legend=True,
+    legend_out=False,
+    palette=['#f03c02', '#a30006', '#601848'],
+    errorbar=None
+)
+plt.xlabel('Tempo de Decodificação (s)')
+plt.ylabel('Codec')
+plt.legend(title='Modalidade')
+
+print("\n--- Tabela de Tempo Médio de Decodificação (s) ---")
+decoding_table = decoding_data.pivot(index='Parameter_Codec', columns='Modality', values='mean')
+print(decoding_table)
+
+plt.show()
+
+
+# --- Gráfico e Tabela de PSNR ---
+
+psnr_data = df.groupby(['Parameter_Beta', 'Modality'])['Stego_Image_PSNR_dB'].agg(['mean', 'std']).reset_index()
+
+figure = sns.catplot(
+    data=df,
+    x='Stego_Image_PSNR_dB',
+    y='Modality',
+    hue='Parameter_Beta',
+    kind='bar',
+    alpha=0.8,
+    aspect=1.8,
+    legend=True,
+    legend_out=False,
+    palette=['#f03c02', '#a30006', '#601848'],
+    errorbar=('sd'),
+)
+plt.xlabel('PSNR da Imagem Esteganografada (dB)')
+plt.ylabel('Modalidade')
+plt.legend(title='Beta')
+figure.set(xlim=(20, None)) # Ajusta o eixo X para melhor visualização
+
+print("\n--- Tabela de PSNR Médio (dB) ---")
+psnr_table = psnr_data.pivot(index='Parameter_Beta', columns='Modality', values='mean')
+print(psnr_table)
+
+plt.show()
+
+
+# --- Gráfico de Dispersão Facetado: BPP vs. Tempo de Codificação ---
+
+modalities = df['Modality'].cat.categories
+fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+axes_flat = axes.flatten()
+
+# Plotar os dados para cada modalidade
+for i, modality in enumerate(modalities):
+    ax = axes_flat[i]
+    data_modality = df[df['Modality'] == modality]
+    sns.scatterplot(
+        data=data_modality,
+        x='Bpp_Comprimido',
+        y='Total_Encoding_Time_s',
+        hue='Parameter_Codec',
+        s=120,
+        alpha=0.8,
+        ax=ax,
+        legend=False  # Desativa legendas individuais
+    )
+    ax.set_title(f'Modalidade: {modality}')
+    ax.set_xlabel('Bits por Pixel (bpp)')
+    ax.set_ylabel('Tempo de Codificação (s)')
+
+# Criar a legenda no quarto subplot
+handles, labels = axes_flat[0].get_legend_handles_labels()
+legend_ax = axes_flat[3]
+legend_ax.legend(handles, labels, loc='center', title='Codec', fontsize='large', title_fontsize='x-large')
+legend_ax.axis('off')  # Esconde os eixos do subplot da legenda
+
+fig.suptitle('BPP vs. Tempo de Codificação por Modalidade', fontsize=16, y=1.02)
+fig.tight_layout(pad=3.0)
+
+plt.show()
+
+
+# --- Gráfico de Dispersão Facetado: BPP vs. Tempo de Decodificação ---
+fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+axes_flat = axes.flatten()
+
+# Plotar os dados para cada modalidade
+for i, modality in enumerate(modalities):
+    ax = axes_flat[i]
+    data_modality = df[df['Modality'] == modality]
+    sns.scatterplot(
+        data=data_modality,
+        x='Bpp_Comprimido',
+        y='Decoding_Time_s',
+        hue='Parameter_Codec',
+        s=120,
+        alpha=0.8,
+        ax=ax,
+        legend=False
+    )
+    ax.set_title(f'Modalidade: {modality}')
+    ax.set_xlabel('Bits por Pixel (bpp)')
+    ax.set_ylabel('Tempo de Decodificação (s)')
+
+# Criar a legenda no quarto subplot
+handles, labels = axes_flat[0].get_legend_handles_labels()
+legend_ax = axes_flat[3]
+legend_ax.legend(handles, labels, loc='center', title='Codec', fontsize='large', title_fontsize='x-large')
+legend_ax.axis('off')
+
+fig.suptitle('BPP vs. Tempo de Decodificação por Modalidade', fontsize=16, y=1.02)
+fig.tight_layout(pad=3.0)
+
+plt.show()
