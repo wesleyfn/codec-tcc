@@ -1,7 +1,6 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-import numpy as np
 
 # Carregar os dados
 df = pd.read_csv('tcc_results/results_parallel.csv')
@@ -91,15 +90,13 @@ print(bpp_table)
 plt.show()
 
 
+# --- Gráfico e Tabela de Tempo de Compressão ---
 
-
-# --- Gráfico e Tabela de Tempo de Codificação ---
-
-encoding_data = df.groupby(['Parameter_Codec', 'Modality'])['Total_Encoding_Time_s'].agg(['mean', 'std']).reset_index()
+encoding_data = df.groupby(['Parameter_Codec', 'Modality'])['Compression_Time_s'].agg(['mean', 'std']).reset_index()
 
 figure = sns.catplot(
     data=df,
-    x='Total_Encoding_Time_s',
+    x='Compression_Time_s',
     y='Parameter_Codec',
     hue='Modality',
     alpha=0.8,
@@ -108,13 +105,13 @@ figure = sns.catplot(
     legend=True,
     legend_out=False,
     palette=['#f03c02', '#a30006', '#601848'],
-    errorbar=('sd')
+    errorbar=None
 )
-plt.xlabel('Tempo de Codificação (s)')
+plt.xlabel('Tempo de Compressão (s)')
 plt.ylabel('Codec')
 plt.legend(title='Modalidade')
 
-print("\n--- Tabela de Tempo Médio de Codificação (s) ---")
+print("\n--- Tabela de Tempo Médio de Compressão (s) ---")
 encoding_table = encoding_data.pivot(index='Parameter_Codec', columns='Modality', values='mean')
 print(encoding_table)
 
@@ -176,72 +173,3 @@ print(psnr_table)
 
 plt.show()
 
-
-# --- Gráfico de Dispersão Facetado: BPP vs. Tempo de Codificação ---
-
-modalities = df['Modality'].cat.categories
-fig, axes = plt.subplots(2, 2, figsize=(14, 12))
-axes_flat = axes.flatten()
-
-# Plotar os dados para cada modalidade
-for i, modality in enumerate(modalities):
-    ax = axes_flat[i]
-    data_modality = df[df['Modality'] == modality]
-    sns.scatterplot(
-        data=data_modality,
-        x='Bpp_Comprimido',
-        y='Total_Encoding_Time_s',
-        hue='Parameter_Codec',
-        s=120,
-        alpha=0.8,
-        ax=ax,
-        legend=False  # Desativa legendas individuais
-    )
-    ax.set_title(f'Modalidade: {modality}')
-    ax.set_xlabel('Bits por Pixel (bpp)')
-    ax.set_ylabel('Tempo de Codificação (s)')
-
-# Criar a legenda no quarto subplot
-handles, labels = axes_flat[0].get_legend_handles_labels()
-legend_ax = axes_flat[3]
-legend_ax.legend(handles, labels, loc='center', title='Codec', fontsize='large', title_fontsize='x-large')
-legend_ax.axis('off')  # Esconde os eixos do subplot da legenda
-
-fig.suptitle('BPP vs. Tempo de Codificação por Modalidade', fontsize=16, y=1.02)
-fig.tight_layout(pad=3.0)
-
-plt.show()
-
-
-# --- Gráfico de Dispersão Facetado: BPP vs. Tempo de Decodificação ---
-fig, axes = plt.subplots(2, 2, figsize=(14, 12))
-axes_flat = axes.flatten()
-
-# Plotar os dados para cada modalidade
-for i, modality in enumerate(modalities):
-    ax = axes_flat[i]
-    data_modality = df[df['Modality'] == modality]
-    sns.scatterplot(
-        data=data_modality,
-        x='Bpp_Comprimido',
-        y='Decoding_Time_s',
-        hue='Parameter_Codec',
-        s=120,
-        alpha=0.8,
-        ax=ax,
-        legend=False
-    )
-    ax.set_title(f'Modalidade: {modality}')
-    ax.set_xlabel('Bits por Pixel (bpp)')
-    ax.set_ylabel('Tempo de Decodificação (s)')
-
-# Criar a legenda no quarto subplot
-handles, labels = axes_flat[0].get_legend_handles_labels()
-legend_ax = axes_flat[3]
-legend_ax.legend(handles, labels, loc='center', title='Codec', fontsize='large', title_fontsize='x-large')
-legend_ax.axis('off')
-
-fig.suptitle('BPP vs. Tempo de Decodificação por Modalidade', fontsize=16, y=1.02)
-fig.tight_layout(pad=3.0)
-
-plt.show()

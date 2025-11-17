@@ -1,17 +1,13 @@
-# codec.py (versão otimizada: c-contiguous bitpacking, streaming reconstruction,
-# precomputed histograma na decomposição, vetorized capacity map)
 import os
 import struct
 import zlib
-import random
+import time
 import logging
 import json
 import imagecodecs
 from datetime import datetime
 from typing import List, Tuple
-from scipy.stats import entropy
 
-from PIL import Image
 import numpy as np
 import pydicom
 from pydicom.dataset import FileDataset, FileMetaDataset
@@ -168,7 +164,7 @@ def compress_image_data(image_array: np.ndarray, codec: str) -> bytes:
             bitspersample = 16 if image_array.dtype == np.uint16 else 8
             return imagecodecs.jpegxl_encode(
                 image_array,
-                lossless=True, effort=7, decodingspeed=0,
+                lossless=True, effort=6, decodingspeed=0,
                 photometric='GRAY', bitspersample=bitspersample,
                 planar=False, numthreads=0
             )
@@ -351,23 +347,23 @@ def adaptive_modalities_decomposition(image: np.ndarray, beta: float = 0.8):
     # Encontrar s* (somando MI em ordem LSB -> MSB)
     cumulative = 0.0
     target = beta * total_entropy
-    s_star = bits_per_pixel
+    s = bits_per_pixel
 
     for i, mi in enumerate(mutual_info_values):
         cumulative += mi
         if cumulative >= target:
-            s_star = i + 1
+            s = i + 1
             break
 
-    s_star = max(1, min(s_star, bits_per_pixel - 1))
+    s = max(1, min(s, bits_per_pixel - 1))
 
     # local = primeiros s* planos (LSB -> ...), global = restantes
-    local_planes = all_planes[:s_star]
-    global_planes = all_planes[s_star:]
+    local_planes = all_planes[:s]
+    global_planes = all_planes[s:]
 
     logger.info(f"\t- Total image entropy H(x): {total_entropy:.4f} bits")
     logger.info(f"\t- Target mutual information (β={beta}): {target:.4f} bits")
-    logger.info(f"\t- Adaptive decomposition s*={s_star}, local={len(local_planes)}, global={len(global_planes)}")
+    logger.info(f"\t- Adaptive decomposition s*={s}, local={len(local_planes)}, global={len(global_planes)}")
     logger.info(f"\t- Achieved mutual info: {cumulative:.4f} / {target:.4f}")
 
     return global_planes, local_planes, bits_per_pixel
@@ -625,6 +621,7 @@ def create_steganography_container(filename: str, header_bytes: bytes, bitmap_by
 
 def run_steganography(input_dicom_file, output_dir, base_filename, beta, block_size, threshold_factor, codec='jxl', align_across_planes=False, start_offset=0):
     print('\n')
+    enconding_start = time.time()
     logger.info(f"STARTING STEGANOGRAPHY ENCODING\n{'='*100}")
     logger.info(f"Parameters: Beta={beta}, BlockSize={block_size}, Threshold={threshold_factor}, Codec={codec}")
 
@@ -682,6 +679,10 @@ def run_steganography(input_dicom_file, output_dir, base_filename, beta, block_s
     os.makedirs(output_dir, exist_ok=True)
     file_size = create_steganography_container(output_bin_file, header_bytes, bitmaps_blob, compressed_bytes)
 
+    enconding_end = time.time()
+    enconding_time = enconding_end - enconding_start
+    logger.info(f"\t- Encoding time: {enconding_time:.2f}s")
+
     stego_dicom = create_clean_dicom_dataset(stego_image_array)
     stego_dicom_file = os.path.join(output_dir, f"{base_filename}_stego.dcm")
     save_dicom_file(stego_dicom, stego_dicom_file)
@@ -693,6 +694,7 @@ def run_steganography(input_dicom_file, output_dir, base_filename, beta, block_s
     return file_size, output_bin_file, stego_dicom_file
 
 def decode_steganography_container(filepath: str, output_prefix: str = "decoded"):
+    decoding_start = time.time()
     logger.info(f"STARTING STEGANOGRAPHY DECODING\n{'='*100}")
     logger.info(f"File: {filepath}")
 
@@ -727,6 +729,10 @@ def decode_steganography_container(filepath: str, output_prefix: str = "decoded"
         }
     )
 
+    decoding_end = time.time()
+    decoding_time = decoding_end - decoding_start
+    logger.info(f"\t- Decoding time: {decoding_time:.2f}s")
+
     metadata_file = f"{output_prefix}_extracted_metadata.json"
     with open(metadata_file, 'w', encoding='utf-8') as f:
         f.write(extracted_metadata_json)
@@ -748,12 +754,12 @@ def decode_steganography_container(filepath: str, output_prefix: str = "decoded"
 
 def main():
     try:
-        input_dicom_file = "../images/mg_16b/666.dcm"
+        input_dicom_file = "images/mg_16b/666.dcm"
         output_dir = "output"
         beta = 0.4
         block_size = 4
-        threshold_factor = 1
-        codec = 'jxl'
+        threshold_factor = 0.8
+        codec = 'jls'
         base_filename = f"meta_stego_beta{beta}_bs{block_size}_tf{threshold_factor}"
 
         os.makedirs(output_dir, exist_ok=True)

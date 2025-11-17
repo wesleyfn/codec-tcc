@@ -18,15 +18,77 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+decoding_time = 0
+
+
 # --- PARÂMETROS DO EXPERIMENTO ---
-DATASET_DIR = '../images/'
+DATASET_DIR = 'images/'
 OUTPUT_DIR = 'tcc_results/'
 # Codecs para comparar
-CODECS_TO_TEST = ['jxl', 'j2k', 'jls', 'png']
+CODECS_TO_TEST = ['jxl', 'j2k', 'jls']
 BETAS_TO_TEST = [0.4, 0.8]                     # Valores de Beta para variar
 BLOCK_SIZE = 4
 THRESHOLD_FACTOR = 0.8
 # -----------------------------------
+
+def decode_steganography_container(filepath: str, output_prefix: str = "decoded"):
+    global decoding_time
+    logger.info(f"STARTING STEGANOGRAPHY DECODING\n{'='*100}")
+    logger.info(f"File: {filepath}")
+
+    logger.info("[1/5] Parsing steganography container...")
+    metadata, bitmaps_blob, stego_image_bytes = codec.parse_steganography_file(filepath)
+    logger.info(f"\t- Codec: {metadata['codec']}, Local Planes: {metadata['s']}, Bits per pixel: {metadata['bits_per_pixel']}")
+
+    start_dec = time.time()            
+    logger.info("[2/5] Decompressing image data...")
+    stego_array = codec.decompress_image_data(stego_image_bytes, metadata['codec'])
+    end_dec = time.time()
+    decoding_time = end_dec - start_dec
+
+    # Determina o dtype correto baseado no bits_per_pixel
+    if metadata['bits_per_pixel'] == 8:
+        target_dtype = np.uint8
+    else:
+        target_dtype = np.uint16
+        
+    if stego_array.dtype != target_dtype:
+        stego_array = stego_array.astype(target_dtype)
+
+    logger.info("[3/5] Extracting hidden DICOM metadata...")
+    all_stego_planes = codec.extract_bit_planes(stego_array)
+    stego_local_planes = all_stego_planes[:metadata['s']]
+    global_planes = all_stego_planes[metadata['s']:]
+
+    total_bits = sum(metadata['segments_lengths'])
+    used_indices, flip_bits = codec.parse_bitmap_blob(bitmaps_blob, total_bits)
+
+    extracted_metadata_json, restored_local_planes = codec.extract_message_and_restore_planes(
+        stego_local_planes, used_indices, flip_bits, {
+            'height': metadata['height'], 'width': metadata['width'],
+            'segments_lengths': metadata['segments_lengths'], 'segments_indices': metadata['segments_indices']
+        }
+    )
+
+    metadata_file = f"{output_prefix}_extracted_metadata.json"
+    with open(metadata_file, 'w', encoding='utf-8') as f:
+        f.write(extracted_metadata_json)
+    logger.info(f"\t✔ Extracted metadata saved to: {metadata_file}")
+
+    logger.info("[4/5] Reconstructing original image...")
+    restored_image_array = codec.merge_global_local_planes(global_planes, restored_local_planes, target_dtype)
+
+    logger.info("[5/5] Creating DICOM with restored original metadata...")
+    restored_dicom = codec.create_clean_dicom_dataset(restored_image_array)
+    restored_dicom = codec.restore_dicom_metadata(restored_dicom, extracted_metadata_json)
+    restored_dicom_file = f"{output_prefix}_restored.dcm"
+    codec.save_dicom_file(restored_dicom, restored_dicom_file)
+
+    logger.info(f"\t✔ Original DICOM with restored metadata: {restored_dicom_file}")
+    logger.info(f"\n{'='*100}\n\t\t    DECODING COMPLETE\n")
+    
+    return restored_dicom, extracted_metadata_json, restored_image_array
+
 
 def get_image_info(img_path):
     """Extrai informações básicas do arquivo DICOM."""
@@ -156,18 +218,13 @@ def process_single_image(img_path):
                 
                 end_total_enc = time.time()
                 total_encoding_time = end_total_enc - start_total_enc
-
-                # 9. Medir Decodificação
-                start_dec = time.time()
                 
+                global decoding_time
                 try:
-                    restored_dicom, extracted_metadata, restored_image = codec.decode_steganography_container(
+                    restored_dicom, extracted_metadata, restored_image = decode_steganography_container(
                         bin_path, 
                         output_prefix=os.path.join(OUTPUT_DIR, f"{base_filename}_decoded")
                     )
-                    
-                    end_dec = time.time()
-                    decoding_time = end_dec - start_dec
                     
                     # 10. Verificação Final (Reversibilidade)
                     reversibility_check = np.array_equal(original_array, restored_image)
@@ -349,6 +406,7 @@ def run_experiments_parallel(max_workers=2):
         logger.info(f"{'='*50}")
     else:
         logger.error("Nenhum resultado foi gerado!")
+
 
 if __name__ == "__main__":
     # Opção 1: Paralelismo com threads (mais seguro)
