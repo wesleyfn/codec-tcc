@@ -3,7 +3,10 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 # Carregar os dados
-df = pd.read_csv('tcc_results/results_parallel.csv')
+df = pd.read_csv('../results_parallel.csv')
+
+# Limitar ao beta 0.4
+df = df[df['Parameter_Beta'] == 0.4].copy()
 
 # Calcular BPP teórico original (para comparação)
 # Assumindo que Bits_Stored é a profundidade de bits original
@@ -20,7 +23,7 @@ df['Compression_Efficiency_Bytes'] = (df['Original_Size_Bytes'] - df['Compressed
 df = df.sort_values(by='Bpp_Comprimido', ascending=False)
 
 # Ordernar Modalidades
-modality_order = ['dx_8b', 'dx_16b', 'mg_16b']
+modality_order = ['dx_8b', 'dx_16b', 'mr_16b']
 df['Modality'] = pd.Categorical(df['Modality'], categories=modality_order, ordered=True)
 
 # Renomear codecs para melhor visualização
@@ -40,31 +43,39 @@ df['Modality'] = df['Modality'].cat.rename_categories({
 
 
 ###################################################################################################################################################################################################
-sns.set_theme(style="whitegrid", palette="Set2", context="notebook")
+sns.set_theme(style="whitegrid")
 
 
 # Calcular média e desvio padrão para anotação
 stats = df.groupby(['Parameter_Codec', 'Modality'])['Bpp_Comprimido'].agg(['mean', 'std']).reset_index()
 
-figure = sns.catplot(
+g = sns.catplot(
     data=df, 
     x='Bpp_Comprimido', 
     y='Parameter_Codec',
-    hue='Modality', 
-    alpha=0.8, 
-    kind='bar',
-    aspect=1.8,
-    legend=True, 
+    hue='Modality',
+    alpha=0.6,
+    legend=None,
     legend_out=False,
-    palette=['#f03c02', '#a30006', '#601848'],
-    errorbar=('sd')
+    aspect=1.8,
+    kind='bar',
+    errorbar=None
+)
+sns.swarmplot(
+    data=df, 
+    x='Bpp_Comprimido', 
+    y='Parameter_Codec',
+    hue='Modality',
+    dodge=True,
+    ax=g.ax
 )
 plt.xlabel('Bits por Pixel (bpp)')
 plt.ylabel('Codec')
 plt.legend(title='Modalidade')
 
+plt.show()
 
-#####
+""" #####
 
 figure = sns.catplot(
     data=df, 
@@ -172,4 +183,4 @@ psnr_table = psnr_data.pivot(index='Parameter_Beta', columns='Modality', values=
 print(psnr_table)
 
 plt.show()
-
+ """
