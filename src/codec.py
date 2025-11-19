@@ -6,7 +6,7 @@ import logging
 import json
 import imagecodecs
 from datetime import datetime
-from typing import List
+from typing import List, Tuple
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -15,7 +15,7 @@ from pydicom.dataset import FileDataset, FileMetaDataset
 from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 
 # =============================================================================
-# CONFIGURAÇÃO DE LOG (ESTILO LIMPO)
+# CONFIGURAÇÃO DE LOG (ESTILO HIERÁRQUICO LIMPO)
 # =============================================================================
 class CleanFormatter(logging.Formatter):
     def format(self, record):
@@ -29,11 +29,11 @@ logging.root.setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
 # =============================================================================
-# VISUAL DEBUGGING HELPERS (ESTILO CIENTÍFICO)
+# VISUAL DEBUGGING HELPERS (CONTROLE CONDICIONAL DE SAÍDA)
 # =============================================================================
 
-def save_visual_debug_image(data: np.ndarray, path: str, title: str = None, normalize: bool = True, cmap: str = 'gray', show_colorbar: bool = False, hline_pos: int = None):
-    """Salva imagem com eixos (axes), visual clean e opcionalmente uma linha horizontal."""
+def save_visual_debug_image(data: np.ndarray, path: str, title: str = None, normalize: bool = True, cmap: str = 'gray', show_colorbar: bool = False, hline_pos: int = None, debug_mode: bool = True):
+    if not debug_mode: return
     try:
         plt.figure(figsize=(6, 6))
         
@@ -50,7 +50,6 @@ def save_visual_debug_image(data: np.ndarray, path: str, title: str = None, norm
             
         if hline_pos is not None and hline_pos < data.shape[0]:
             plt.axhline(y=hline_pos, color='red', linestyle='--', linewidth=1.5, label='Scan Limit')
-            # Coloca a legenda fora ou num canto para não atrapalhar
             plt.legend(loc='upper right', fontsize=8, framealpha=0.8)
 
         if title: 
@@ -61,13 +60,14 @@ def save_visual_debug_image(data: np.ndarray, path: str, title: str = None, norm
         plt.tight_layout()
         plt.savefig(path, dpi=150, bbox_inches="tight")
         plt.close()
+        logger.info(f"    [SAVED] Image: {os.path.basename(path)}")
         return True
     except Exception as e:
         logger.warning(f"    [!] Erro ao salvar imagem '{path}': {e}")
         return False
 
-def save_bitplanes_debug(planes: List[np.ndarray], path: str, split_point: int = -1):
-    """Salva TODOS os bitplanes em um único grid."""
+def save_bitplanes_debug(planes: List[np.ndarray], path: str, split_point: int = -1, debug_mode: bool = True):
+    if not debug_mode: return
     try:
         count = len(planes)
         cols = 4
@@ -98,11 +98,12 @@ def save_bitplanes_debug(planes: List[np.ndarray], path: str, split_point: int =
         plt.tight_layout()
         plt.savefig(path, dpi=150, bbox_inches='tight')
         plt.close()
+        logger.info(f"    [SAVED] Image: {os.path.basename(path)}")
     except Exception as e:
         logger.warning(f"    [!] Erro ao salvar bitplanes: {e}")
 
-def save_histogram_debug(values: np.ndarray, threshold: float, path: str, title: str, xlabel: str):
-    """Histograma focado na distribuição de erro (-1, 0, +1)."""
+def save_histogram_debug(values: np.ndarray, threshold: float, path: str, title: str, xlabel: str, debug_mode: bool = True):
+    if not debug_mode: return
     try:
         plt.figure(figsize=(8, 4))
         bins = np.arange(values.min() - 0.5, values.max() + 1.5, 1)
@@ -122,6 +123,7 @@ def save_histogram_debug(values: np.ndarray, threshold: float, path: str, title:
         plt.tight_layout()
         plt.savefig(path, dpi=150)
         plt.close()
+        logger.info(f"    [SAVED] Image: {os.path.basename(path)}")
         return True
     except Exception as e:
         logger.warning(f"    [!] Erro ao salvar histograma: {e}")
@@ -247,9 +249,10 @@ def create_clean_dicom_dataset(image_array: np.ndarray) -> FileDataset:
     logger.info("    - Clean DICOM structure created (Compliant).")
     return ds
 
-def save_dicom_file(ds, path):
+def save_dicom_file(ds, path, debug_mode: bool = True):
     ds.save_as(path, enforce_file_format=True)
-    logger.info(f"    - Saved DICOM: {os.path.basename(path)}")
+    if debug_mode:
+        logger.info(f"    - Saved DICOM: {os.path.basename(path)}")
 
 # =============================================================================
 # COMPRESSION
@@ -258,7 +261,7 @@ def save_dicom_file(ds, path):
 def compress_image_data(img: np.ndarray, codec: str) -> bytes:
     logger.info(f"  > Compressing ({codec.upper()})...")
     t0 = time.time()
-    if codec == 'jxl': data = imagecodecs.jpegxl_encode(img, lossless=True, effort=6, photometric='GRAY')
+    if codec == 'jxl': data = imagecodecs.jpegxl_encode(img, lossless=True, effort=7, photometric='GRAY', numthreads=0)
     elif codec == 'jls': data = imagecodecs.jpegls_encode(img)
     elif codec == 'j2k': data = imagecodecs.jpeg2k_encode(img, reversible=True)
     elif codec == 'png': data = imagecodecs.png_encode(img)
@@ -304,35 +307,47 @@ def calculate_mutual_information(plane, image, hist_y, bins) -> float:
     X = plane.reshape(-1)
     Y = image.reshape(-1)
     total = Y.size
-    if image.dtype.itemsize * 8 > 8: Y = (Y.astype(np.uint32) >> 4).astype(np.int64)
-    else: Y = Y.astype(np.int64)
+    if image.dtype.itemsize * 8 > 8: 
+        Y = (Y.astype(np.uint32) >> 4).astype(np.int64)
+    else: 
+        Y = Y.astype(np.int64)
+
     ones = int(X.sum())
     p_x = np.array([total - ones, ones], dtype=np.float64) / total
     mask1 = (X == 1)
     h1 = np.bincount(Y[mask1], minlength=bins)
     h0 = hist_y - h1
     p_joint = np.vstack([h0, h1]) / total
+
     def ent(p): 
         pnz = p[p > 0]
         return -np.sum(pnz * np.log2(pnz))
+    
     return float(ent(p_x) + ent(hist_y/total) - ent(p_joint.ravel()))
 
-def adaptive_modalities_decomposition(image: np.ndarray, beta: float, output_dir: str, base_name: str):
-    planes = extract_bit_planes(image)
-    depth = len(planes)
+def adaptive_modalities_decomposition(image: np.ndarray, beta: float, output_dir: str, base_name: str, bits_stored: int, debug_mode: bool = True):
+    all_planes = extract_bit_planes(image)
+    depth = len(all_planes) # 16 bits allocated
+    
     bins = 4096 if depth > 8 else 256
     img_q = (image >> 4) if depth > 8 else image
     hist = np.bincount(img_q.reshape(-1), minlength=bins).astype(np.float64)
     p = hist / hist.sum()
     total_H = -np.sum(p[p>0] * np.log2(p[p>0]))
     target_H = beta * total_H
-    logger.info(f"  > Entropy Analysis:")
-    logger.info(f"    - H(x) Image: {total_H:.4f} bits")
-    logger.info(f"    - Target Cumulative MI (Beta={beta}): {target_H:.4f}")
+
+    if debug_mode:
+        logger.info(f"  > Entropy Analysis:")
+        logger.info(f"    - H(x) Image: {total_H:.4f} bits (Max Depth: {bits_stored})") # Log Bits Stored
+        logger.info(f"    - Target Cumulative MI (Beta={beta}): {target_H:.4f}")
+
     cum_mi = 0.0
     s = depth
     found_s = False
-    for i, plane in enumerate(planes):
+    
+    # --- NOVO: Limitar a iteração ao BitsStored ---
+    for i in range(bits_stored):
+        plane = all_planes[i]
         mi = calculate_mutual_information(plane, image, hist, bins)
         cum_mi += mi
         status = ""
@@ -340,17 +355,23 @@ def adaptive_modalities_decomposition(image: np.ndarray, beta: float, output_dir
             s = i + 1
             status = "  <-- CUTOFF POINT (s)"
             found_s = True
-        logger.info(f"    - Plane {i}: MI={mi:.5f} | Cumulative={cum_mi:.5f}{status}")
+        if debug_mode:
+            logger.info(f"    - Plane {i}: MI={mi:.5f} | Cumulative={cum_mi:.5f}{status}")
+    
+    # Se o ponto de corte for maior que o BitsStored, é porque a entropia é muito baixa.
+    s = min(s, bits_stored)
     s = max(1, min(s, depth - 1))
-    local = planes[:s]
-    global_p = planes[s:]
-    save_bitplanes_debug(planes, os.path.join(output_dir, f"{base_name}_debug_all_planes.png"), split_point=s)
+    
+    local = all_planes[:s]
+    global_p = all_planes[s:]
+    
+    save_bitplanes_debug(all_planes, os.path.join(output_dir, f"{base_name}_debug_all_planes.png"), split_point=s, debug_mode=debug_mode)
+
     return global_p, local, depth
 
-def create_capacity_map_lge(image: np.ndarray, block_size: int, target_percentile: float, output_dir: str, base_name: str, required_bits: int = None):
+def create_capacity_map_lge(image: np.ndarray, block_size: int, target_percentile: float, output_dir: str, base_name: str, required_bits: int = None, debug_mode: bool = True):
     """
     Gera mapa de capacidade definindo o threshold automaticamente via percentil.
-    target_percentile: 0 a 100 (ex: 75 seleciona os 25% blocos mais complexos).
     """
     img = image.astype(np.int32)
     h, w = img.shape
@@ -365,24 +386,21 @@ def create_capacity_map_lge(image: np.ndarray, block_size: int, target_percentil
     w_pad = (block_size - w % block_size) % block_size
     lge_padded = np.pad(lge, ((0,h_pad), (0,w_pad)), mode='edge')
     
-    bh, bw = lge_padded.shape[0]//block_size, lge_padded.shape[1]//block_size
+    bh, bw = lge_padded.shape[0] // block_size, lge_padded.shape[1] // block_size
     blocks = lge_padded.reshape(bh, block_size, bw, block_size).transpose(0, 2, 1, 3)
     block_energy = blocks.mean(axis=(2,3))
     
     # 3. Cálculo Automático do Threshold
     flat = block_energy.ravel()
-    
-    # Se o usuário passar P75, ele quer cortar os 75% mais lisos e manter o topo.
     calculated_threshold = np.percentile(flat, target_percentile)
     
-    # Debug Stats
-    p25, p50, p75 = np.percentile(flat, [25, 50, 75])
-    logger.info(f"  > LGE Stats (Block={block_size}):")
-    logger.info(f"    - Distribution: P25={p25:.1f} | P50={p50:.1f} | P75={p75:.1f}")
-    logger.info(f"    - Auto-Threshold: Target P{target_percentile} => Value {calculated_threshold:.1f}")
-    
-    save_histogram_debug(flat, calculated_threshold, os.path.join(output_dir, f"{base_name}_debug_energy_hist.png"), 
-                         f"LGE Distribution (Cutoff at P{target_percentile})", "Energy Value")
+    if debug_mode:
+        p25, p50, p75 = np.percentile(flat, [25, 50, 75])
+        logger.info(f"  > LGE Stats (Block={block_size}):")
+        logger.info(f"    - Distribution: P25={p25:.1f} | P50={p50:.1f} | P75={p75:.1f}")
+        logger.info(f"    - Auto-Threshold: Target P{target_percentile} => Value {calculated_threshold:.1f}")
+        save_histogram_debug(flat, calculated_threshold, os.path.join(output_dir, f"{base_name}_debug_energy_hist.png"), 
+                             f"LGE Distribution (Cutoff at P{target_percentile})", "Energy Value", debug_mode=debug_mode)
 
     # 4. Thresholding
     mask = block_energy >= calculated_threshold
@@ -407,19 +425,20 @@ def create_capacity_map_lge(image: np.ndarray, block_size: int, target_percentil
         if stop_row_idx != -1:
             mask[stop_row_idx+1:, :] = False
             scan_limit_y = (stop_row_idx + 1) * block_size
-            logger.info(f"  > Optimized Scan: Stopped at row {stop_row_idx} (Pixel Y={scan_limit_y})")
-        else:
+            if debug_mode:
+                logger.info(f"  > Optimized Scan: Stopped at row {stop_row_idx} (Pixel Y={scan_limit_y})")
+        elif debug_mode:
             logger.info("  > Full Scan Required: Message needs entire capacity or more.")
 
     capacity_map = np.kron(mask, np.ones((block_size, block_size), dtype=np.uint8))[:h, :w]
     allowed = np.where(capacity_map.ravel() == 1)[0].astype(np.int64)
     
-    # Mapas Visuais
+    # Mapas Visuais (Chamada condicional)
     save_visual_debug_image(block_energy, os.path.join(output_dir, f"{base_name}_debug_energy_map.png"), 
-                            title="LGE Energy Map", cmap='viridis', show_colorbar=True)
+                            title="LGE Energy Map", cmap='viridis', show_colorbar=True, debug_mode=debug_mode)
                             
     save_visual_debug_image(capacity_map*255, os.path.join(output_dir, f"{base_name}_debug_capacity.png"), 
-                            title=f"Capacity Mask (P{target_percentile} > {calculated_threshold:.1f})", cmap='gray', hline_pos=scan_limit_y)
+                            title=f"Capacity Mask (P{target_percentile} > {calculated_threshold:.1f})", cmap='gray', hline_pos=scan_limit_y, debug_mode=debug_mode)
     
     return capacity_map, allowed
 
@@ -473,9 +492,9 @@ def pack_bitmap(used, flips):
     return packed
 
 def save_container(path, codec, s, w, h, bs, depth, lens, img_bytes, bmp_bytes):
-    cid = {'png':1, 'j2k':2, 'jls':3, 'jxl':4}.get(codec, 0)
-    # Format: < B(Ver) B(Codec) B(s) B(Pad) H(W) H(H) I(ImgSz) H(BS) H(Segs) B(Depth)
-    hdr = struct.pack("<BBBBHH IH H B", 3, cid, s, 0, w, h, len(img_bytes), bs, len(lens), depth)
+    codec_id = {'png':1, 'j2k':2, 'jls':3, 'jxl':4}.get(codec, 0)
+
+    hdr = struct.pack("<BBBB HH IHHB", 3, codec_id, s, 0, w, h, len(img_bytes), bs, len(lens), depth)
     
     lens_b = b''.join(struct.pack("<I", x) for x in lens)
     
@@ -492,84 +511,113 @@ def save_container(path, codec, s, w, h, bs, depth, lens, img_bytes, bmp_bytes):
 # PIPELINE CONTROL
 # =============================================================================
 
-def run_encoder(dicom_path, out_dir, beta, b_size, percentile, codec, message_override=None):
-    print("\n" + "="*60)
-    logger.info("STARTING ENCODER PROCESS")
-    logger.info(f"Input File: {os.path.basename(dicom_path)}")
-    logger.info(f"Settings: Beta={beta}, BlockSize={b_size}, TargetPercentile=P{percentile}, Codec={codec}")
-    print("-" * 60)
+def run_encoder(dicom_path, out_dir, beta, b_size, percentile, codec, message_override=None, debug_mode: bool = False):
     t_start = time.time()
+    
+    if debug_mode:
+        print("\n" + "="*60)
+        logger.info("STARTING ENCODER PROCESS (DEBUG MODE)")
+        logger.info(f"Input File: {os.path.basename(dicom_path)}")
+        logger.info(f"Settings: Beta={beta}, BlockSize={b_size}, TargetPercentile=P{percentile}, Codec={codec}")
+        print("-" * 60)
+    else:
+        logger.info(f"Encoding {os.path.basename(dicom_path)}...")
 
     # [1] LOAD
-    logger.info("[+] Phase 1: Loading & Payload Prep")
+    if debug_mode: logger.info("[+] Phase 1: Loading & Payload Prep")
     ds = pydicom.dcmread(dicom_path)
     img = ds.pixel_array
     
-    # --- ALTERAÇÃO AQUI: Prioriza a mensagem de override ---
+    # --- NOVO: Capturar BitsStored ---
+    bits_stored = getattr(ds, 'BitsStored', img.dtype.itemsize * 8)
+    
+    try:
+        modality = os.path.basename(os.path.dirname(dicom_path))
+    except Exception:
+        modality = 'unknown_mod'
+        
+    original_file_name = os.path.splitext(os.path.basename(dicom_path))[0]
+    base_name_full = f"{original_file_name}_{modality}_b{beta}_p{percentile}_{codec}"
+    
     if message_override:
         meta_str = message_override
-        logger.info(f"  > Using OVERRIDE message for capacity test.")
+        if debug_mode: logger.info(f"  > Using OVERRIDE message for capacity test.")
     else:
         meta_str = extract_dicom_metadata(ds)
     
     bits = convert_message_to_bits(meta_str)
 
     # [2] DECOMPOSITION
-    logger.info("[+] Phase 2: Adaptive Decomposition")
-    base_name = f"stego_b{beta}_p{percentile}"
-    glo, loc, depth = adaptive_modalities_decomposition(img, beta, out_dir, base_name)
-    logger.info(f"  > Result: {len(loc)} Local planes (Noise) | {len(glo)} Global planes (Structure)")
+    if debug_mode: logger.info("[+] Phase 2: Adaptive Decomposition")
+    # --- NOVO: Passar bits_stored ---
+    glo, loc, depth = adaptive_modalities_decomposition(img, beta, out_dir, base_name_full, bits_stored=bits_stored, debug_mode=debug_mode)
+    if debug_mode: logger.info(f"  > Result: {len(loc)} Local planes (Noise) | {len(glo)} Global planes (Structure)")
 
     # [3] CAPACITY
-    logger.info("[+] Phase 3: Capacity Analysis (Auto-LGE)")
-    c_map, allowed = create_capacity_map_lge(img, b_size, percentile, out_dir, base_name, required_bits=len(bits))
-    
-    usage_pct = (len(bits) / len(allowed)) * 100 if len(allowed) > 0 else float('inf')
-    logger.info(f"  > Capacity: {len(allowed)} bits | Required: {len(bits)} bits")
-    logger.info(f"  > Utilization: {usage_pct:.2f}%")
+    if debug_mode: logger.info("[+] Phase 3: Capacity Analysis (Auto-LGE)")
+    c_map, allowed = create_capacity_map_lge(img, b_size, percentile, out_dir, base_name_full, required_bits=len(bits), debug_mode=debug_mode)
     
     if len(bits) > len(allowed):
-        logger.error("  [!] ERROR: Insufficient Capacity. LOWER the percentile to include more blocks.")
-        return None, None
+        if not debug_mode: logger.error(f"Encoding FAILED | Capacity Overflow: Needed {len(bits)} > Found {len(allowed)}.")
+        return None, None, 0.0
 
     # [4] EMBED
-    logger.info("[+] Phase 4: Embedding")
+    if debug_mode: logger.info("[+] Phase 4: Embedding")
     stego_loc, lens, used, flips = embed_message_in_planes(loc, bits, allowed, img.shape)
     stego_img = reconstruct_from_bit_planes(stego_loc + glo, img.dtype)
-    diff = stego_img.astype(np.int32) - img.astype(np.int32)
-    save_visual_debug_image(np.abs(diff), os.path.join(out_dir, f"{base_name}_debug_residuals.png"), 
-                            title="Difference Map (Residuals)", cmap='inferno', show_colorbar=True)
-    save_histogram_debug(diff.ravel(), None, os.path.join(out_dir, f"{base_name}_debug_residuals_hist.png"), 
-                         "Pixel Difference Distribution", "Difference Value")
-    logger.info(f"  > Max Pixel Change: {np.abs(diff).max()}")
+    
+    # Debug de residuais
+    if debug_mode:
+        diff = stego_img.astype(np.int32) - img.astype(np.int32)
+        save_visual_debug_image(np.abs(diff), os.path.join(out_dir, f"{base_name_full}_debug_residuals.png"), title="Difference Map (Residuals)", cmap='inferno', show_colorbar=True, debug_mode=debug_mode)
+        save_histogram_debug(diff.ravel(), None, os.path.join(out_dir, f"{base_name_full}_debug_residuals_hist.png"), "Pixel Difference Distribution", "Difference Value", debug_mode=debug_mode)
+        logger.info(f"  > Max Pixel Change: {np.abs(diff).max()}")
 
     # [5] PACKAGE
-    logger.info("[+] Phase 5: Packaging")
-    img_bin = compress_image_data(stego_img, codec)
+    if debug_mode: logger.info("[+] Phase 5: Packaging")
+    
+    # 1. Correção de Estrutura e Tipo
+    if stego_img.dtype.itemsize * 8 > 8:
+        stego_img_final = stego_img.astype(np.uint16)
+        # Garantia de Endianness e Contiguidade para codecs C/C++
+        if stego_img_final.dtype.byteorder == '>': 
+            stego_img_final = stego_img_final.byteswap().newbyteorder() 
+    else:
+        stego_img_final = stego_img.astype(np.uint8)
+        
+    stego_img_reshaped = np.squeeze(stego_img_final)
+    stego_img_contiguous = np.ascontiguousarray(stego_img_reshaped)
+    
+    img_bin = compress_image_data(stego_img_contiguous, codec) 
     bmp_bin = pack_bitmap(used, flips)
     
-    bin_path = os.path.join(out_dir, f"{base_name}.stgc")
+    bin_path = os.path.join(out_dir, f"{base_name_full}.stgc")
     sz = save_container(bin_path, codec, len(loc), img.shape[1], img.shape[0], b_size, depth, lens, img_bin, bmp_bin)
     
-    mock_ds = create_clean_dicom_dataset(stego_img)
-    save_dicom_file(mock_ds, os.path.join(out_dir, f"{base_name}_container.dcm"))
+    if debug_mode:
+        mock_ds = create_clean_dicom_dataset(stego_img)
+        save_dicom_file(mock_ds, os.path.join(out_dir, f"{base_name_full}_container.dcm"), debug_mode=debug_mode)
 
     total_t = time.time() - t_start
-    print("-" * 60)
-    logger.info(f"ENCODING COMPLETE in {total_t:.2f}s")
-    logger.info(f"Output Container: {bin_path} ({sz/1024:.1f} KB)")
-    print("="*60 + "\n")
-    return bin_path, meta_str
-
-def run_decoder(bin_path, out_dir):
-    print("\n" + "="*60)
-    logger.info("STARTING DECODER PROCESS")
-    logger.info(f"Input File: {os.path.basename(bin_path)}")
-    print("-" * 60)
+    if not debug_mode:
+        logger.info(f"Encode Success | Time: {total_t:.4f}s | File: {os.path.basename(bin_path)}")
     
+    return bin_path, meta_str, total_t
+
+def run_decoder(bin_path, out_dir, debug_mode: bool = False):
+    t_start = time.time()
+    
+    if debug_mode:
+        print("\n" + "="*60)
+        logger.info("STARTING DECODER PROCESS (DEBUG MODE)")
+        logger.info(f"Input File: {os.path.basename(bin_path)}")
+        print("-" * 60)
+    else:
+        logger.info(f"Decoding {os.path.basename(bin_path)}...")
+
     c_map = {1:'png', 2:'j2k', 3:'jls', 4:'jxl'}
     
-    logger.info("[+] Step 1: Unpacking")
+    if debug_mode: logger.info("[+] Step 1: Unpacking")
     with open(bin_path, "rb") as f:
         if f.read(4) != b"STGC": raise ValueError("Invalid Signature")
         h_len = struct.unpack("<I", f.read(4))[0]
@@ -577,7 +625,6 @@ def run_decoder(bin_path, out_dir):
         
         base_sz = struct.calcsize("<BBBBHH IH H B")
         
-        # Removida a variável 'th' do unpack
         ver, cid, s, _, w, h, isz, bs, sc, bpp = struct.unpack("<BBBBHH IH H B", h_data[:base_sz])
         
         lens = []
@@ -589,10 +636,9 @@ def run_decoder(bin_path, out_dir):
         img_data = f.read(isz)
         bmp_data = f.read()
         
-    # Log atualizado (sem threshold)
-    logger.info(f"  > Header (v{ver}): Codec={c_map.get(cid)}, S={s}, Blocks={bs}, Segments={sc}")
+    if debug_mode: logger.info(f"  > Header (v{ver}): Codec={c_map.get(cid)}, S={s}, Blocks={bs}, Segments={sc}")
 
-    logger.info("[+] Step 2: Decompressing & Extracting")
+    if debug_mode: logger.info("[+] Step 2: Decompressing & Extracting")
     stego_img = decompress_image_data(img_data, c_map.get(cid))
     dtype = np.uint16 if bpp > 8 else np.uint8
     stego_img = stego_img.astype(dtype)
@@ -615,7 +661,6 @@ def run_decoder(bin_path, out_dir):
         idx = used_idx[cursor : cursor+count]
         f_bits = flips[cursor : cursor+count]
         y, x = np.unravel_index(idx, (h, w))
-        
         vals = loc[i][y, x]
         bits_out[cursor : cursor+count] = vals & 1
         restored_loc[i][y, x] = (vals & 0xFE) | ((vals & 1) ^ f_bits)
@@ -623,52 +668,58 @@ def run_decoder(bin_path, out_dir):
         
     msg_str = convert_bits_to_message(bits_out)
     
-    logger.info("[+] Step 3: Restoring DICOM")
+    if debug_mode: logger.info("[+] Step 3: Restoring DICOM")
     full_img = reconstruct_from_bit_planes(restored_loc + glo, dtype)
     
-    base = os.path.splitext(os.path.basename(bin_path))[0]
-    ds = create_clean_dicom_dataset(full_img)
-    ds = restore_dicom_metadata(ds, msg_str)
-    save_dicom_file(ds, os.path.join(out_dir, f"{base}_restored.dcm"))
+    if debug_mode:
+        base = os.path.splitext(os.path.basename(bin_path))[0]
+        ds = create_clean_dicom_dataset(full_img)
+        ds = restore_dicom_metadata(ds, msg_str)
+        save_dicom_file(ds, os.path.join(out_dir, f"{base}_restored.dcm"), debug_mode=debug_mode)
     
-    print("-" * 60)
-    logger.info("DECODING COMPLETE")
-    print("="*60 + "\n")
-    return full_img, msg_str
+    total_t = time.time() - t_start
+    if not debug_mode:
+        logger.info(f"Decode Success | Time: {total_t:.4f}s")
+    
+    return full_img, msg_str, total_t
 
 if __name__ == "__main__":
-    IN_FILE = "images/dx_8b/888.dcm" # Ajuste seu arquivo
-    OUT_DIR = "output"
+    IN_FILE = "images/CT_16b/001.dcm" 
+    OUT_DIR = "output" 
+    DEBUG_MODE = True        # <- CONTROLE PRINCIPAL DE SAÍDA (MUDE PARA True PARA VER OS GRÁFICOS)
+
     os.makedirs(OUT_DIR, exist_ok=True)
     
     if os.path.exists(IN_FILE):
-        try:
-            # percentile=75 significa "Use os 25% mais complexos da imagem"
-            # Se precisar de mais espaço, diminua para 50 ou 40.
-            bin_file, original_msg = run_encoder(IN_FILE, OUT_DIR, beta=0.2, b_size=4, percentile=75, codec='jls')
+        
+        # 1. ENCODE 
+        bin_file, original_msg, encode_time = run_encoder(IN_FILE, OUT_DIR, beta=0.2, b_size=4, percentile=90, codec='jls', debug_mode=DEBUG_MODE)
+        
+        if bin_file:
+            # 2. DECODE 
+            orig = pydicom.dcmread(IN_FILE).pixel_array
+            rec, decoded_msg, decode_time = run_decoder(bin_file, OUT_DIR, debug_mode=DEBUG_MODE)
             
-            if bin_file:
-                orig = pydicom.dcmread(IN_FILE).pixel_array
-                rec, decoded_msg = run_decoder(bin_file, OUT_DIR)
-                
-                print("\n" + "="*60)
-                logger.info("FINAL VERIFICATION REPORT")
-                print("-" * 60)
-                
-                if np.array_equal(orig, rec):
-                    logger.info("  [OK] PIXEL DATA: Images match exactly.")
-                else:
-                    diff = np.abs(orig.astype(float) - rec.astype(float)).sum()
-                    logger.error(f"  [FAIL] PIXEL DATA: Mismatch found (Sum Diff: {diff})")
-                
-                if original_msg == decoded_msg:
-                    logger.info("  [OK] METADATA: Message extracted perfectly.")
-                else:
-                    logger.error("  [FAIL] METADATA: Message corruption detected.")
-                    logger.info(f"    > Orig len: {len(original_msg)}")
-                    logger.info(f"    > Rec  len: {len(decoded_msg)}")
-                print("="*60 + "\n")
-        except Exception as e:
-            logger.error(f"CRITICAL ERROR: {e}", exc_info=True)
+            # 3. VERIFICAÇÃO FINAL 
+            print("\n" + "="*60)
+            logger.info("FINAL VERIFICATION & PERFORMANCE REPORT")
+            print("-" * 60)
+            
+            logger.info(f"PERFORMANCE: Encode Time: {encode_time:.4f}s | Decode Time: {decode_time:.4f}s")
+            
+            if np.array_equal(orig, rec):
+                logger.info("RESULT: PIXEL DATA: Match (Lossless).")
+            else:
+                diff = np.abs(orig.astype(float) - rec.astype(float)).sum()
+                logger.error(f"RESULT: PIXEL DATA: Mismatch (Sum Diff: {diff})")
+            
+            if original_msg == decoded_msg:
+                logger.info("RESULT: METADATA: Match (100% recovered).")
+            else:
+                logger.error("RESULT: METADATA: Corruption detected.")
+                if DEBUG_MODE:
+                     logger.info(f"    > Orig len: {len(original_msg)} | Rec len: {len(decoded_msg)}")
+            print("="*60 + "\n")
+            
     else:
         logger.error(f"Input file not found: {IN_FILE}")
