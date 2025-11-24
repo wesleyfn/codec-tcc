@@ -1,134 +1,238 @@
 import pandas as pd
 import matplotlib.pyplot as plt
+import seaborn as sns
 import numpy as np
 
-# --- Configurações Gráficas ---
-plt.style.use('default')
-plt.rcParams.update({'font.size': 9, 'axes.grid': True, 'figure.dpi': 150})
-# ------------------------------
+# Carregar os dados
+df = pd.read_csv('tcc_results/results_sequential.csv')
 
-def generate_analysis_plots(df):
-    
-    # --- 1. PREPARAÇÃO DE DADOS ---
-    
-    # Renomear codecs
-    df['Parameter_Codec'] = df['Parameter_Codec'].replace({
-        'j2k': 'JPEG 2000', 
-        'jls': 'JPEG-LS',
-        'jxl': 'JPEG XL'
-    })
-    
-    # Renomear e ordenar modalidades
-    modality_order = ['dx_8b', 'dx_16b', 'mr_16b', 'mg_16b']
-    df['Modality'] = pd.Categorical(df['Modality'], categories=modality_order, ordered=True)
-    df['Modality'] = df['Modality'].cat.rename_categories({
-        'dx_8b': 'DX 8-bit',
-        'dx_16b': 'DX 16-bit', 
-        'mr_16b': 'MR 16-bit',
-        'mg_16b': 'MG 16-bit'
-    })
-    
-    # Calcular BPP original (para eficiência)
-    df['Bpp_Original'] = df['Bits_Stored']
-    df['Eficiencia_Bpp'] = (df['Bpp_Original'] - df['Bpp']) / df['Bpp_Original'] * 100
-    
-    # Agrupamento para médias e desvios
-    grouped_data = df.groupby(['Parameter_Codec', 'Modality', 'Parameter_Beta'])
-    summary = grouped_data[['Bpp', 'Total_Encoding_Time_s', 'Decoding_Time_s', 'Stego_Image_PSNR_dB']].agg(['mean', 'std']).reset_index()
+# Calcular Bpp teórico original (para comparação)
+# Assumindo que Bits_Stored é a profundidade de bits original
+df['Bpp_Original'] = df['Bits_Stored']
+
+# Calcular eficiência de compressão
+df['Eficiencia_Bpp'] = (df['Bpp_Original'] - df['Bpp']) / df['Bpp_Original'] * 100
+
+# Ordenar Codecs
+df = df.sort_values(by='Bpp', ascending=False)
+
+# Ordernar Modalidades
+modality_order = ['CT','DX','MG']
+df['Modality'] = pd.Categorical(df['Modality'], categories=modality_order)
 
 
-    # --- 2. GRÁFICO BPP VS CODEC ---
 
-    fig, ax = plt.subplots(figsize=(10, 5))
+###################################################################################################################################################################################################
+sns.set_theme(style="whitegrid", palette="Set2", context="notebook")
+
+
+# Calcular média e desvio padrão para anotação
+stats = df.groupby(['Codec', 'Modality'])['Bpp'].agg(['mean', 'std']).reset_index()
+
+figure = sns.catplot(
+    data=df, 
+    x='Codec', 
+    y='Bpp',
+    hue='Modality', 
+    alpha=0.8, 
+    kind='bar',
+    aspect=1.8,
+    legend=True, 
+    legend_out=False,
     
-    pivot_bpp = summary.pivot_table(
-        index='Parameter_Codec', 
-        columns=['Modality', 'Parameter_Beta'], 
-        values=('Bpp', 'mean')
+    errorbar=('sd')
+)
+
+# Adiciona rótulos de desvio padrão em cima de cada barra
+for i, c in enumerate(figure.ax.containers):
+    modality = modality_order[i]
+    # Filtra as estatísticas para a modalidade atual e ordena pelo codec
+    labels = stats[stats['Modality'] == modality].sort_values('Codec')['std'].map(lambda x: f'±{x:.2f}')
+    # Cria o bar label e move um pouco pra esquerda
+    for bar, label in zip(c, labels):
+        x = (bar.get_x() + bar.get_width() / 2 ) - 0.025
+        y = bar.get_height() + 0.1
+        figure.ax.text(x, y, label, ha='center', va='bottom', rotation=90, fontsize=8, color='black')
+
+figure.ax.set_ylim(top=df['Bpp'].max() * 1.2) # Aumenta o espaço para os rótulos
+plt.xlabel('Codec')
+plt.ylabel('Bits por Pixel (Bpp)')
+plt.legend(title='Modalidade')
+
+
+#####
+
+figure = sns.catplot(
+    data=df, 
+    x='Eficiencia_Bpp', 
+    y='Codec',
+    hue='Modality', 
+    alpha=0.8, 
+    kind='bar',
+    aspect=1.8,
+    errorbar=None,
+    legend_out=False,
+    legend=True
+)
+plt.xlabel('Eficiência de Compressão (%)')
+plt.ylabel('Codec')
+plt.legend(title='Modalidade')
+
+print("\n--- Tabela de Bpp Comprimido ---")
+Bpp_table = df.groupby(['Codec', 'Modality'])['Bpp'].agg(['mean', 'std']).unstack()
+print(Bpp_table)
+
+plt.show()
+
+
+
+
+# --- Gráfico e Tabela de Tempo de Codificação ---
+
+encoding_data = df.groupby(['Codec', 'Modality'])['Encoding_Speed_ms_MB'].agg(['mean', 'std']).reset_index()
+
+figure = sns.catplot(
+    data=df,
+    x='Encoding_Speed_ms_MB',
+    y='Codec',
+    hue='Modality',
+    alpha=0.8,
+    kind='bar',
+    aspect=1.8,
+    legend=True,
+    legend_out=False,
+    errorbar=None
+)
+plt.xlabel('Velocidade de Codificação (ms/MB)')
+plt.ylabel('Codec')
+plt.legend(title='Modalidade')
+
+print("\n--- Tabela de Velocidade Média de Codificação (ms/MB) ---")
+encoding_table = encoding_data.pivot(index='Codec', columns='Modality', values='mean')
+print(encoding_table)
+
+plt.show()
+
+# --- Gráfico e Tabela de Tempo de Decodificação ---
+
+decoding_data = df.groupby(['Codec', 'Modality'])['Decoding_Speed_ms_MB'].agg(['mean', 'std']).reset_index()
+
+c = sns.catplot(
+    data=df,
+    x='Decoding_Speed_ms_MB',
+    y='Codec',
+    hue='Modality',
+    alpha=0.8,
+    kind='bar',
+    aspect=1.8,
+    legend=True,
+    legend_out=False,
+    errorbar=None
+)
+plt.xlabel('Velocidade de Decodificação (ms/MB)')
+plt.ylabel('Codec')
+plt.legend(title='Modalidade')
+
+print("\n--- Tabela de Velocidade Média de Decodificação (ms/MB) ---")
+decoding_table = decoding_data.pivot(index='Codec', columns='Modality', values='mean')
+print(decoding_table)
+
+plt.show()
+
+
+# --- Gráfico e Tabela de PSNR ---
+
+psnr_data = df.groupby(['Beta', 'Modality'])['PSNR_dB'].agg(['mean', 'std']).reset_index()
+
+figure = sns.catplot(
+    data=df,
+    x='PSNR_dB',
+    y='Modality',
+    hue='Beta',
+    kind='bar',
+    alpha=0.8,
+    aspect=1.8,
+    legend=True,
+    legend_out=False,
+    errorbar=('sd'),
+)
+plt.xlabel('PSNR da Imagem Esteganografada (dB)')
+plt.ylabel('Modalidade')
+plt.legend(title='Beta')
+figure.set(xlim=(20, None)) # Ajusta o eixo X para melhor visualização
+
+print("\n--- Tabela de PSNR Médio (dB) ---")
+psnr_table = psnr_data.pivot(index='Beta', columns='Modality', values='mean')
+print(psnr_table)
+
+plt.show()
+
+
+""" # --- Gráfico de Dispersão Facetado: Bpp vs. Tempo de Codificação ---
+
+modalities = df['Modality'].cat.categories
+fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+axes_flat = axes.flatten()
+
+# Plotar os dados para cada modalidade
+for i, modality in enumerate(modalities):
+    ax = axes_flat[i]
+    data_modality = df[df['Modality'] == modality]
+    sns.scatterplot(
+        data=data_modality,
+        x='Bpp',
+        y='Total_Encoding_Time_s',
+        hue='Codec',
+        s=120,
+        alpha=0.8,
+        ax=ax,
+        legend=False  # Desativa legendas individuais
     )
-    
-    # Plotar como barras agrupadas
-    pivot_bpp.plot(kind='bar', ax=ax, width=0.8)
-    
-    ax.set_title('Bits por Pixel (Bpp) por Codec e Modalidade', fontsize=12, fontweight='bold')
-    ax.set_xlabel('Codec', fontsize=10)
-    ax.set_ylabel('Bpp Final', fontsize=10)
-    ax.tick_params(axis='x', rotation=0)
-    ax.legend(title='Modalidade (Beta)', loc='upper left', ncol=2, fontsize=8)
-    ax.yaxis.grid(True, linestyle='--', alpha=0.6)
-    plt.tight_layout()
-    plt.savefig('analysis_bpp_by_codec.png')
-    plt.close()
-    print("Gráfico: analysis_bpp_by_codec.png gerado.")
+    ax.set_title(f'Modalidade: {modality}')
+    ax.set_xlabel('Bits por Pixel (Bpp)')
+    ax.set_ylabel('Tempo de Codificação (s)')
+
+# Criar a legenda no quarto subplot
+handles, labels = axes_flat[0].get_legend_handles_labels()
+legend_ax = axes_flat[3]
+legend_ax.legend(handles, labels, loc='center', title='Codec', fontsize='large', title_fontsize='x-large')
+legend_ax.axis('off')  # Esconde os eixos do subplot da legenda
+
+fig.suptitle('Bpp vs. Tempo de Codificação por Modalidade', fontsize=16, y=1.02)
+fig.tight_layout(pad=3.0)
+
+plt.show()
 
 
-    # --- 3. GRÁFICO TEMPO DE ENCODE VS CODEC ---
+# --- Gráfico de Dispersão Facetado: Bpp vs. Tempo de Decodificação ---
+fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+axes_flat = axes.flatten()
 
-    fig, ax = plt.subplots(figsize=(10, 5))
-    
-    pivot_time = summary.pivot_table(
-        index='Parameter_Codec', 
-        columns=['Modality', 'Parameter_Beta'], 
-        values=('Total_Encoding_Time_s', 'mean')
+# Plotar os dados para cada modalidade
+for i, modality in enumerate(modalities):
+    ax = axes_flat[i]
+    data_modality = df[df['Modality'] == modality]
+    sns.scatterplot(
+        data=data_modality,
+        x='Bpp',
+        y='Decoding_Time_s',
+        hue='Codec',
+        s=120,
+        alpha=0.8,
+        ax=ax,
+        legend=False
     )
-    
-    pivot_time.plot(kind='bar', ax=ax, width=0.8)
-    
-    ax.set_title('Tempo Médio de Codificação (s)', fontsize=12, fontweight='bold')
-    ax.set_xlabel('Codec', fontsize=10)
-    ax.set_ylabel('Tempo Total (s)', fontsize=10)
-    ax.tick_params(axis='x', rotation=0)
-    ax.legend(title='Modalidade (Beta)', loc='upper left', ncol=2, fontsize=8)
-    ax.yaxis.grid(True, linestyle='--', alpha=0.6)
-    plt.tight_layout()
-    plt.savefig('analysis_time_by_codec.png')
-    plt.close()
-    print("Gráfico: analysis_time_by_codec.png gerado.")
-    
-    
-    # --- 4. GRÁFICO PSNR (Qualidade) VS MODALIDADE ---
-    
-    # Agrupar apenas por Modalidade e Beta (PSNR não varia com o codec, pois é calculado antes da compressão)
-    psnr_summary = df.groupby(['Modality', 'Parameter_Beta'])['Stego_Image_PSNR_dB'].mean().unstack()
+    ax.set_title(f'Modalidade: {modality}')
+    ax.set_xlabel('Bits por Pixel (Bpp)')
+    ax.set_ylabel('Tempo de Decodificação (s)')
 
-    fig, ax = plt.subplots(figsize=(8, 5))
-    
-    psnr_summary.plot(kind='bar', ax=ax, width=0.7)
-    
-    ax.set_title('PSNR da Imagem Esteganografada por Modalidade', fontsize=12, fontweight='bold')
-    ax.set_xlabel('Modalidade', fontsize=10)
-    ax.set_ylabel('PSNR Médio (dB)', fontsize=10)
-    ax.tick_params(axis='x', rotation=45)
-    ax.legend(title='Beta', loc='lower right', fontsize=8)
-    ax.set_ylim(40, psnr_summary.values.max() + 5) # Começa em 40 dB
-    ax.yaxis.grid(True, linestyle='--', alpha=0.6)
-    plt.tight_layout()
-    plt.savefig('analysis_psnr_by_modality.png')
-    plt.close()
-    print("Gráfico: analysis_psnr_by_modality.png gerado.")
+# Criar a legenda no quarto subplot
+handles, labels = axes_flat[0].get_legend_handles_labels()
+legend_ax = axes_flat[3]
+legend_ax.legend(handles, labels, loc='center', title='Codec', fontsize='large', title_fontsize='x-large')
+legend_ax.axis('off')
 
+fig.suptitle('Bpp vs. Tempo de Decodificação por Modalidade', fontsize=16, y=1.02)
+fig.tight_layout(pad=3.0)
 
-    # --- 5. TABELAS DE RESUMO ---
-    print("\n" + "="*80)
-    print("--- TABELA DE BITS POR PIXEL (BPP) MÉDIO ---")
-    print(summary.pivot_table(index='Parameter_Codec', columns=['Modality', 'Parameter_Beta'], values=('Bpp', 'mean'), aggfunc='mean').round(3).to_markdown())
-    
-    print("\n" + "="*80)
-    print("--- TABELA DE TEMPO MÉDIO DE CODIFICAÇÃO (s) ---")
-    print(summary.pivot_table(index='Parameter_Codec', columns=['Modality', 'Parameter_Beta'], values=('Total_Encoding_Time_s', 'mean'), aggfunc='mean').round(3).to_markdown())
-    
-    print("\n" + "="*80)
-    print("--- TABELA DE PSNR MÉDIO (dB) ---")
-    print(psnr_summary.round(2).to_markdown())
-    print("="*80 + "\n")
-
-
-if __name__ == '__main__':
-    # A localização do arquivo CSV deve ser ajustada conforme a estrutura de pastas do seu projeto
-    try:
-        df = pd.read_csv('tcc_results/results_sequential.csv')
-    except FileNotFoundError:
-        print("ERRO: Arquivo 'tcc_results/results_sequential.csv' não encontrado. Execute 'main_tcc.py' primeiro.")
-        exit()
-        
-    generate_analysis_plots(df)
+plt.show() """

@@ -5,17 +5,20 @@ import time
 import logging
 import json
 import imagecodecs
-from datetime import datetime
-from typing import List, Tuple
-
+import glob
+import pandas as pd
 import numpy as np
+from datetime import datetime
+from typing import List
+
 import matplotlib.pyplot as plt
 import pydicom
 from pydicom.dataset import FileDataset, FileMetaDataset
 from pydicom.uid import ExplicitVRLittleEndian, generate_uid
+from skimage.metrics import peak_signal_noise_ratio as psnr, structural_similarity as ssim
 
 # =============================================================================
-# CONFIGURAÇÃO DE LOG (ESTILO HIERÁRQUICO LIMPO)
+# CONFIGURAÇÃO DE LOG & PARÂMETROS GLOBAIS
 # =============================================================================
 class CleanFormatter(logging.Formatter):
     def format(self, record):
@@ -28,8 +31,22 @@ logging.root.addHandler(handler)
 logging.root.setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
+# --- PARÂMETROS GLOBAIS DE EXPERIMENTO ---
+DATASET_DIR = 'images/'
+OUTPUT_DIR = 'tcc_results/'
+CODECS_TO_TEST = ['jxl', 'j2k', 'jls']
+BETAS_TO_TEST = [0.2, 0.8] 
+BLOCK_SIZE = 4
+TARGET_PERCENTILE = 75 
+TARGET_BIT_DEPTH = 16
+
+# --- CONSTANTES DE CÁLCULO ---
+MS_PER_S = 1000
+BYTES_PER_MB = 1024 * 1024 
+# ----------------------------------------
+
 # =============================================================================
-# VISUAL DEBUGGING HELPERS (CONTROLE CONDICIONAL DE SAÍDA)
+# VISUAL DEBUGGING HELPERS
 # =============================================================================
 
 def save_visual_debug_image(data: np.ndarray, path: str, title: str = None, normalize: bool = True, cmap: str = 'gray', show_colorbar: bool = False, hline_pos: int = None, debug_mode: bool = True):
@@ -95,8 +112,7 @@ def save_bitplanes_debug(planes: List[np.ndarray], path: str, split_point: int =
                 spine.set_visible(True)
                 spine.set_linewidth(1)
                 
-        plt.tight_layout()
-        plt.savefig(path, dpi=150, bbox_inches='tight')
+        plt.savefig(path, bbox_inches='tight')
         plt.close()
         logger.info(f"    [SAVED] Image: {os.path.basename(path)}")
     except Exception as e:
@@ -120,8 +136,7 @@ def save_histogram_debug(values: np.ndarray, threshold: float, path: str, title:
         if values.max() - values.min() < 10:
             plt.xticks(np.arange(values.min(), values.max() + 1))
             
-        plt.tight_layout()
-        plt.savefig(path, dpi=150)
+        plt.savefig(path)
         plt.close()
         logger.info(f"    [SAVED] Image: {os.path.basename(path)}")
         return True
@@ -130,7 +145,7 @@ def save_histogram_debug(values: np.ndarray, threshold: float, path: str, title:
         return False
 
 # =============================================================================
-# DICOM UTILS
+# DICOM UTILS & METRICS (Integrados do main_tcc)
 # =============================================================================
 
 def serialize_dicom_value(value):
@@ -254,27 +269,46 @@ def save_dicom_file(ds, path, debug_mode: bool = True):
     if debug_mode:
         logger.info(f"    - Saved DICOM: {os.path.basename(path)}")
 
+def get_image_info_for_exp(img_path):
+    """Extrai informações básicas do arquivo DICOM para o loop de experimento."""
+    original_dicom = pydicom.dcmread(img_path, stop_before_pixels=True)
+    original_size = os.path.getsize(img_path)
+    
+    try:
+        modality = os.path.basename(os.path.dirname(img_path))
+    except Exception:
+        modality = getattr(original_dicom, 'Modality', 'Unknown')
+        
+    bits_stored = getattr(original_dicom, 'BitsStored', 16)
+    bits_allocated = getattr(original_dicom, 'BitsAllocated', 16)
+    shape = (int(getattr(original_dicom, 'Rows', 0)), int(getattr(original_dicom, 'Columns', 0)))
+    
+    return original_size, modality, bits_stored, bits_allocated, shape
+
+
 # =============================================================================
-# COMPRESSION
+# COMPRESSION & CORE ALGORITHMS
 # =============================================================================
 
 def compress_image_data(img: np.ndarray, codec: str) -> bytes:
     logger.info(f"  > Compressing ({codec.upper()})...")
     t0 = time.time()
-    if codec == 'jxl': data = imagecodecs.jpegxl_encode(img, lossless=True, effort=7, photometric='GRAY', numthreads=0)
+    
+    if codec == 'jxl': data = imagecodecs.jpegxl_encode(img, lossless=True, numthreads=0)
     elif codec == 'jls': data = imagecodecs.jpegls_encode(img)
-    elif codec == 'j2k': data = imagecodecs.jpeg2k_encode(img, reversible=True)
+    elif codec == 'j2k': data = imagecodecs.jpeg2k_encode(img, reversible=True, numthreads=0)
     elif codec == 'png': data = imagecodecs.png_encode(img)
     else: raise ValueError(f"Unknown codec: {codec}")
+    
     logger.info(f"    - Size: {len(data)} bytes (Time: {time.time()-t0:.4f}s)")
     return data
 
 def decompress_image_data(data, codec):
-    if codec == 'jxl': return imagecodecs.jpegxl_decode(data)
+    if codec == 'jxl': return imagecodecs.jpegxl_decode(data, numthreads=0)
     elif codec == 'jls': return imagecodecs.jpegls_decode(data)
-    elif codec == 'j2k': return imagecodecs.jpeg2k_decode(data)
+    elif codec == 'j2k': return imagecodecs.jpeg2k_decode(data, numthreads=0)
     elif codec == 'png': return imagecodecs.png_decode(data)
-    raise ValueError(f"Unknown codec: {codec}")
+    else: raise ValueError(f"Unknown codec: {codec}")
 
 def convert_message_to_bits(msg: str) -> np.ndarray:
     return np.unpackbits(np.frombuffer(msg.encode('utf-8'), dtype=np.uint8))
@@ -282,10 +316,6 @@ def convert_message_to_bits(msg: str) -> np.ndarray:
 def convert_bits_to_message(bits: np.ndarray) -> str:
     if len(bits) % 8 != 0: bits = np.pad(bits, (0, 8 - len(bits)%8), mode='constant')
     return np.packbits(bits).tobytes().decode('utf-8', 'replace').rstrip('\x00')
-
-# =============================================================================
-# CORE ALGORITHMS
-# =============================================================================
 
 def extract_bit_planes(image: np.ndarray) -> List[np.ndarray]:
     img = np.ascontiguousarray(image)
@@ -325,9 +355,9 @@ def calculate_mutual_information(plane, image, hist_y, bins) -> float:
     
     return float(ent(p_x) + ent(hist_y/total) - ent(p_joint.ravel()))
 
-def adaptive_modalities_decomposition(image: np.ndarray, beta: float, output_dir: str, base_name: str, bits_stored: int, debug_mode: bool = True):
+def adaptive_modality_decomposition(image: np.ndarray, beta: float, output_dir: str, base_name: str, bits_stored: int, debug_mode: bool = True):
     all_planes = extract_bit_planes(image)
-    depth = len(all_planes) # 16 bits allocated
+    depth = len(all_planes)
     
     bins = 4096 if depth > 8 else 256
     img_q = (image >> 4) if depth > 8 else image
@@ -338,14 +368,13 @@ def adaptive_modalities_decomposition(image: np.ndarray, beta: float, output_dir
 
     if debug_mode:
         logger.info(f"  > Entropy Analysis:")
-        logger.info(f"    - H(x) Image: {total_H:.4f} bits (Max Depth: {bits_stored})") # Log Bits Stored
+        logger.info(f"    - H(x) Image: {total_H:.4f} bits (Max Depth: {bits_stored})")
         logger.info(f"    - Target Cumulative MI (Beta={beta}): {target_H:.4f}")
 
     cum_mi = 0.0
     s = depth
     found_s = False
     
-    # --- NOVO: Limitar a iteração ao BitsStored ---
     for i in range(bits_stored):
         plane = all_planes[i]
         mi = calculate_mutual_information(plane, image, hist, bins)
@@ -358,7 +387,6 @@ def adaptive_modalities_decomposition(image: np.ndarray, beta: float, output_dir
         if debug_mode:
             logger.info(f"    - Plane {i}: MI={mi:.5f} | Cumulative={cum_mi:.5f}{status}")
     
-    # Se o ponto de corte for maior que o BitsStored, é porque a entropia é muito baixa.
     s = min(s, bits_stored)
     s = max(1, min(s, depth - 1))
     
@@ -369,19 +397,17 @@ def adaptive_modalities_decomposition(image: np.ndarray, beta: float, output_dir
 
     return global_p, local, depth
 
-def create_capacity_map_lge(image: np.ndarray, block_size: int, target_percentile: float, output_dir: str, base_name: str, required_bits: int = None, debug_mode: bool = True):
-    """
-    Gera mapa de capacidade definindo o threshold automaticamente via percentil.
-    """
+""" def create_capacity_map_lge(image: np.ndarray, block_size: int, target_percentile: float, output_dir: str, base_name: str, required_bits: int = None, debug_mode: bool = True):
+
     img = image.astype(np.int32)
     h, w = img.shape
     
-    # 1. LGE Calc
+    # 1. CÁLCULO VETORIZADO DO LGE (NA IMAGEM INTEIRA)
     dh = np.abs(img[:, 1:] - img[:, :-1]); dh = np.pad(dh, ((0,0),(0,1)))
     dv = np.abs(img[1:, :] - img[:-1, :]); dv = np.pad(dv, ((0,1),(0,0)))
     lge = dh + dv
     
-    # 2. Block Processing
+    # 2. PROCESSAMENTO DE BLOCOS E THRESHOLDING
     h_pad = (block_size - h % block_size) % block_size
     w_pad = (block_size - w % block_size) % block_size
     lge_padded = np.pad(lge, ((0,h_pad), (0,w_pad)), mode='edge')
@@ -390,63 +416,136 @@ def create_capacity_map_lge(image: np.ndarray, block_size: int, target_percentil
     blocks = lge_padded.reshape(bh, block_size, bw, block_size).transpose(0, 2, 1, 3)
     block_energy = blocks.mean(axis=(2,3))
     
-    # 3. Cálculo Automático do Threshold
+    # 3. CÁLCULO DO THRESHOLD
     flat = block_energy.ravel()
     calculated_threshold = np.percentile(flat, target_percentile)
     
     if debug_mode:
         p25, p50, p75 = np.percentile(flat, [25, 50, 75])
-        logger.info(f"  > LGE Stats (Block={block_size}):")
-        logger.info(f"    - Distribution: P25={p25:.1f} | P50={p50:.1f} | P75={p75:.1f}")
-        logger.info(f"    - Auto-Threshold: Target P{target_percentile} => Value {calculated_threshold:.1f}")
+        logger.info(f"  > LGE Stats (Block={block_size}): P25={p25:.1f} | P50={p50:.1f} | P75={p75:.1f}")
+        logger.info(f"  > Auto-Threshold: Target P{target_percentile} => Value {calculated_threshold:.1f}")
         save_histogram_debug(flat, calculated_threshold, os.path.join(output_dir, f"{base_name}_debug_energy_hist.png"), 
                              f"LGE Distribution (Cutoff at P{target_percentile})", "Energy Value", debug_mode=debug_mode)
 
-    # 4. Thresholding
+    # 4. CRIAÇÃO DA MÁSCARA DE BLOCOS
     mask = block_energy >= calculated_threshold
     
-    # Lógica de "Early Exit"
-    scan_limit_y = img.shape[0]
+    # -------------------------------------------------------------------------
+    # EARLY EXIT OTIMIZADO (Truncamento Preciso da Lista de Pixels)
+    # -------------------------------------------------------------------------
+
+    # 5. CONVERTE MÁSCARA DE BLOCOS PARA ÍNDICES DE PIXEL ELEGÍVEIS
+    capacity_map_full = np.kron(mask, np.ones((block_size, block_size), dtype=np.uint8))[:h, :w]
+    allowed_full = np.where(capacity_map_full.ravel() == 1)[0].astype(np.int64)
+
+    total_capacity_pixels = len(allowed_full)
     
+    if debug_mode:
+        logger.info(f"  > Total Theoretical Capacity: {total_capacity_pixels} bits.")
+        logger.info(f"  > Required Bits: {required_bits}")
+
+    # 6. VERIFICAÇÃO E TRUNCAMENTO
     if required_bits is not None:
-        pixels_per_block = block_size * block_size
-        row_counts = np.sum(mask, axis=1)
-        current_blocks = 0
-        stop_row_idx = -1
-        
-        for r, count in enumerate(row_counts):
-            current_blocks += count
-            current_capacity_bits = current_blocks * pixels_per_block
+        if total_capacity_pixels < required_bits:
+            # Não há capacidade total: a falha de OVERFLOW ocorrerá em run_encoder
+            allowed = allowed_full 
+            if debug_mode: logger.error("  [!] Error: Theoretical Capacity is insufficient.")
+        else:
+            # TRUNCAMENTO PRECISO: Early Exit ocorre aqui. Apenas os pixels necessários são mantidos.
+            allowed = allowed_full[:required_bits]
             
-            if current_capacity_bits >= required_bits:
-                stop_row_idx = r
-                break
-        
-        if stop_row_idx != -1:
-            mask[stop_row_idx+1:, :] = False
-            scan_limit_y = (stop_row_idx + 1) * block_size
+            # 7. Geração do Scan Limit (Apenas para Debug Visual)
             if debug_mode:
-                logger.info(f"  > Optimized Scan: Stopped at row {stop_row_idx} (Pixel Y={scan_limit_y})")
-        elif debug_mode:
-            logger.info("  > Full Scan Required: Message needs entire capacity or more.")
-
-    capacity_map = np.kron(mask, np.ones((block_size, block_size), dtype=np.uint8))[:h, :w]
-    allowed = np.where(capacity_map.ravel() == 1)[0].astype(np.int64)
+                last_pixel_index = allowed[-1]
+                last_row, _ = np.unravel_index(last_pixel_index, (h, w))
+                scan_limit_y = (last_row // block_size + 1) * block_size
+                
+                logger.info(f"  > Early Exit Success: Truncated to first {required_bits} pixels.")
+                logger.info(f"  > Visual Scan Limit (Y): {scan_limit_y}")
+                
+                save_visual_debug_image(capacity_map_full*255, os.path.join(output_dir, f"{base_name}_debug_capacity.png"), 
+                                        title=f"Capacity Mask (P{target_percentile})", cmap='gray', hline_pos=scan_limit_y, debug_mode=debug_mode)
+                save_visual_debug_image(block_energy, os.path.join(output_dir, f"{base_name}_debug_energy_map.png"), 
+                                        title="LGE Energy Map", cmap='viridis', show_colorbar=True, debug_mode=debug_mode)
+        # Se required_bits for None, usamos a capacidade total
+        allowed = allowed_full
     
-    # Mapas Visuais (Chamada condicional)
-    save_visual_debug_image(block_energy, os.path.join(output_dir, f"{base_name}_debug_energy_map.png"), 
-                            title="LGE Energy Map", cmap='viridis', show_colorbar=True, debug_mode=debug_mode)
-                            
-    save_visual_debug_image(capacity_map*255, os.path.join(output_dir, f"{base_name}_debug_capacity.png"), 
-                            title=f"Capacity Mask (P{target_percentile} > {calculated_threshold:.1f})", cmap='gray', hline_pos=scan_limit_y, debug_mode=debug_mode)
+    # A máscara final retornada é a máscara completa, mas o 'allowed' é a lista truncada.
+    # A função 'embed_message_in_planes' usa apenas a lista 'allowed'.
+    return capacity_map_full, allowed """
+
+def create_capacity_map_lge(image: np.ndarray, block_size: int, target_percentile: float, output_dir: str, base_name: str, required_bits: int = None, debug_mode: bool = True):
+    """
+    Gera mapa de capacidade com 'Logical Early Exit'.
+    Calcula a energia total (rápido em NumPy) e trunca a lista de pixels
+    para o tamanho exato da mensagem, garantindo precisão e velocidade no Embedding.
+    """
+    img = image.astype(np.int32)
+    h, w = img.shape
     
-    return capacity_map, allowed
+    # 1. CÁLCULO VETORIZADO DO LGE
+    dh = np.abs(img[:, 1:] - img[:, :-1]); dh = np.pad(dh, ((0,0),(0,1)))
+    dv = np.abs(img[1:, :] - img[:-1, :]); dv = np.pad(dv, ((0,1),(0,0)))
+    lge = dh + dv
+    
+    # 2. MÉDIA POR BLOCOS
+    h_pad = (block_size - h % block_size) % block_size
+    w_pad = (block_size - w % block_size) % block_size
+    lge_padded = np.pad(lge, ((0,h_pad), (0,w_pad)), mode='edge')
+    
+    bh, bw = lge_padded.shape[0] // block_size, lge_padded.shape[1] // block_size
+    blocks = lge_padded.reshape(bh, block_size, bw, block_size).transpose(0, 2, 1, 3)
+    block_energy = blocks.mean(axis=(2,3))
+    
+    # 3. THRESHOLDING
+    flat = block_energy.ravel()
+    calculated_threshold = np.percentile(flat, target_percentile)
+    
+    if debug_mode:
+        p50, p75 = np.percentile(flat, [50, 75])
+        logger.info(f"  > LGE Stats: P50={p50:.1f} | P75={p75:.1f} | Cutoff={calculated_threshold:.1f}")
+        save_histogram_debug(flat, calculated_threshold, os.path.join(output_dir, f"{base_name}_debug_energy_hist.png"), 
+                             f"LGE Distribution", "Energy", debug_mode=debug_mode)
 
-# =============================================================================
-# EMBEDDING & IO
-# =============================================================================
+    # 4. MÁSCARA E LISTA DE PIXELS
+    mask = block_energy >= calculated_threshold
+    
+    # Expande a máscara de blocos para máscara de pixels
+    capacity_map_full = np.kron(mask, np.ones((block_size, block_size), dtype=np.uint8))[:h, :w]
+    
+    # Lista completa de todos os pixels onde poderíamos esconder dados
+    allowed_full = np.where(capacity_map_full.ravel() == 1)[0].astype(np.int64)
+    
+    total_capacity = len(allowed_full)
 
-def embed_message_in_planes(planes, msg_bits, allowed, shape):
+    # 5. LÓGICA DE CORTE (EARLY EXIT)
+    if required_bits is not None:
+        if total_capacity < required_bits:
+            # ERRO: A imagem não aguenta a mensagem com esse Percentil.
+            # Retornamos tudo para que o erro estoure no lugar certo (run_encoder)
+            if debug_mode: logger.error(f"  [!] INSUFFICIENT CAPACITY: Need {required_bits}, have {total_capacity}.")
+            allowed = allowed_full
+        else:
+            # SUCESSO: Cortamos a lista no tamanho EXATO da mensagem.
+            # Isso evita processar o resto da imagem na etapa de 'Embedding'.
+            allowed = allowed_full[:required_bits]
+            
+            if debug_mode:
+                logger.info(f"  > Early Exit Applied: Truncated {total_capacity} -> {required_bits} pixels.")
+                
+                # Visualização da linha de parada (Opcional)
+                last_idx = allowed[-1]
+                last_row, _ = np.unravel_index(last_idx, (h, w))
+                scan_limit_y = (last_row // block_size + 1) * block_size
+                save_visual_debug_image(capacity_map_full*255, os.path.join(output_dir, f"{base_name}_debug_capacity.png"), 
+                                        title=f"Capacity Map (Scanned until Y={scan_limit_y})", cmap='gray', hline_pos=scan_limit_y, debug_mode=debug_mode)
+    else:
+        allowed = allowed_full
+        
+    # Retorna o mapa completo (visual) e a lista cortada (funcional)
+    return capacity_map_full, allowed
+
+def embed_message_in_planes(planes, msg_bits, allowed):
     if len(msg_bits) > len(allowed):
         logger.error(f"  [!] OVERFLOW: Msg={len(msg_bits)} bits > Capacity={len(allowed)} bits.")
         raise ValueError("Capacity Overflow")
@@ -466,7 +565,7 @@ def embed_message_in_planes(planes, msg_bits, allowed, shape):
     
     cursor = 0
     cursor_idx = 0
-    h, w = shape
+    h, w = planes[0].shape # CORREÇÃO: Obter a forma do próprio bit-plane
     
     for i, count in enumerate(seg_lens):
         if count == 0: continue
@@ -477,17 +576,17 @@ def embed_message_in_planes(planes, msg_bits, allowed, shape):
         orig = stego_planes[i][y, x]
         new = (orig & 0xFE) | bits
         stego_planes[i][y, x] = new
-        flips[cursor : cursor+count] = (orig ^ new) & 1
+        flips[cursor : cursor+count] = (orig & 1) ^ (new & 1)
         
         cursor += count
         cursor_idx += count
         
     return stego_planes, seg_lens, idx_used, flips
 
-def pack_bitmap(used, flips):
+def pack_bitmap(used: np.ndarray, flips: np.ndarray):
     diffs = np.diff(np.insert(used.astype(np.uint32), 0, 0)).astype(np.uint32)
     fp = np.packbits(flips, bitorder='little')
-    raw = struct.pack("<I", len(diffs)) + diffs.tobytes() + fp.tobytes()
+    raw = struct.pack("<I", len(diffs)) + diffs.tobytes() + fp.tobytes() # type: ignore
     packed = zlib.compress(raw, level=1)
     return packed
 
@@ -508,7 +607,7 @@ def save_container(path, codec, s, w, h, bs, depth, lens, img_bytes, bmp_bytes):
     return os.path.getsize(path)
 
 # =============================================================================
-# PIPELINE CONTROL
+# PIPELINE CONTROL (MODO EXPERIMENTO E SINGLE TEST)
 # =============================================================================
 
 def run_encoder(dicom_path, out_dir, beta, b_size, percentile, codec, message_override=None, debug_mode: bool = False):
@@ -528,8 +627,9 @@ def run_encoder(dicom_path, out_dir, beta, b_size, percentile, codec, message_ov
     ds = pydicom.dcmread(dicom_path)
     img = ds.pixel_array
     
-    # --- NOVO: Capturar BitsStored ---
+    # --- Capturar BitsStored e garantir Dtype ---
     bits_stored = getattr(ds, 'BitsStored', img.dtype.itemsize * 8)
+    original_dtype = img.dtype
     
     try:
         modality = os.path.basename(os.path.dirname(dicom_path))
@@ -549,8 +649,7 @@ def run_encoder(dicom_path, out_dir, beta, b_size, percentile, codec, message_ov
 
     # [2] DECOMPOSITION
     if debug_mode: logger.info("[+] Phase 2: Adaptive Decomposition")
-    # --- NOVO: Passar bits_stored ---
-    glo, loc, depth = adaptive_modalities_decomposition(img, beta, out_dir, base_name_full, bits_stored=bits_stored, debug_mode=debug_mode)
+    glo, loc, depth = adaptive_modality_decomposition(img, beta, out_dir, base_name_full, bits_stored=bits_stored, debug_mode=debug_mode)
     if debug_mode: logger.info(f"  > Result: {len(loc)} Local planes (Noise) | {len(glo)} Global planes (Structure)")
 
     # [3] CAPACITY
@@ -558,17 +657,19 @@ def run_encoder(dicom_path, out_dir, beta, b_size, percentile, codec, message_ov
     c_map, allowed = create_capacity_map_lge(img, b_size, percentile, out_dir, base_name_full, required_bits=len(bits), debug_mode=debug_mode)
     
     if len(bits) > len(allowed):
-        if not debug_mode: logger.error(f"Encoding FAILED | Capacity Overflow: Needed {len(bits)} > Found {len(allowed)}.")
-        return None, None, 0.0
+        logger.error(f"Encoding FAILED | Capacity Overflow: Needed {len(bits)} > Found {len(allowed)}.")
+        return None, None, 0.0, None # Retorno ajustado para incluir stego_img
 
     # [4] EMBED
     if debug_mode: logger.info("[+] Phase 4: Embedding")
-    stego_loc, lens, used, flips = embed_message_in_planes(loc, bits, allowed, img.shape)
+    if debug_mode: logger.info("  > Distributing message bits across local planes...")
+    stego_loc, lens, used, flips = embed_message_in_planes(loc, bits, allowed)
+    if debug_mode: logger.info("  > Reconstructing stego-image from modified bit-planes...")
     stego_img = reconstruct_from_bit_planes(stego_loc + glo, img.dtype)
     
     # Debug de residuais
     if debug_mode:
-        diff = stego_img.astype(np.int32) - img.astype(np.int32)
+        diff = stego_img.astype(np.float64) - img.astype(np.float64)
         save_visual_debug_image(np.abs(diff), os.path.join(out_dir, f"{base_name_full}_debug_residuals.png"), title="Difference Map (Residuals)", cmap='inferno', show_colorbar=True, debug_mode=debug_mode)
         save_histogram_debug(diff.ravel(), None, os.path.join(out_dir, f"{base_name_full}_debug_residuals_hist.png"), "Pixel Difference Distribution", "Difference Value", debug_mode=debug_mode)
         logger.info(f"  > Max Pixel Change: {np.abs(diff).max()}")
@@ -576,10 +677,10 @@ def run_encoder(dicom_path, out_dir, beta, b_size, percentile, codec, message_ov
     # [5] PACKAGE
     if debug_mode: logger.info("[+] Phase 5: Packaging")
     
-    # 1. Correção de Estrutura e Tipo
+    # 1. Correção de Estrutura e Tipo (Unsigned + Endianness + Contiguidade)
     if stego_img.dtype.itemsize * 8 > 8:
         stego_img_final = stego_img.astype(np.uint16)
-        # Garantia de Endianness e Contiguidade para codecs C/C++
+        # Garante a ordem de bytes (Little Endian)
         if stego_img_final.dtype.byteorder == '>': 
             stego_img_final = stego_img_final.byteswap().newbyteorder() 
     else:
@@ -588,10 +689,13 @@ def run_encoder(dicom_path, out_dir, beta, b_size, percentile, codec, message_ov
     stego_img_reshaped = np.squeeze(stego_img_final)
     stego_img_contiguous = np.ascontiguousarray(stego_img_reshaped)
     
+    if debug_mode: logger.info("  > Compressing stego-image with selected codec...")
     img_bin = compress_image_data(stego_img_contiguous, codec) 
+    if debug_mode: logger.info("  > Packing bitmap of changes...")
     bmp_bin = pack_bitmap(used, flips)
     
     bin_path = os.path.join(out_dir, f"{base_name_full}.stgc")
+    if debug_mode: logger.info("  > Saving final .stgc container file...")
     sz = save_container(bin_path, codec, len(loc), img.shape[1], img.shape[0], b_size, depth, lens, img_bin, bmp_bin)
     
     if debug_mode:
@@ -602,7 +706,8 @@ def run_encoder(dicom_path, out_dir, beta, b_size, percentile, codec, message_ov
     if not debug_mode:
         logger.info(f"Encode Success | Time: {total_t:.4f}s | File: {os.path.basename(bin_path)}")
     
-    return bin_path, meta_str, total_t
+    # --- VALOR DE RETORNO MODIFICADO: Retorna stego_img ---
+    return bin_path, meta_str, total_t, stego_img 
 
 def run_decoder(bin_path, out_dir, debug_mode: bool = False):
     t_start = time.time()
@@ -683,43 +788,157 @@ def run_decoder(bin_path, out_dir, debug_mode: bool = False):
     
     return full_img, msg_str, total_t
 
-if __name__ == "__main__":
-    IN_FILE = "images/CT_16b/001.dcm" 
-    OUT_DIR = "output" 
-    DEBUG_MODE = True        # <- CONTROLE PRINCIPAL DE SAÍDA (MUDE PARA True PARA VER OS GRÁFICOS)
-
-    os.makedirs(OUT_DIR, exist_ok=True)
+def process_single_image(img_path, output_dir, codes, betas, block_size, percentile, target_bit_depth, debug_mode):
+    """Executa o processamento completo de uma única imagem DICOM."""
+    results = []
     
-    if os.path.exists(IN_FILE):
+    try:
+        logger.info(f"--- Processando: {os.path.basename(img_path)} ---")
         
-        # 1. ENCODE 
-        bin_file, original_msg, encode_time = run_encoder(IN_FILE, OUT_DIR, beta=0.2, b_size=4, percentile=90, codec='jls', debug_mode=DEBUG_MODE)
+        # 1. Carregar e obter informações e filtrar
+        original_dicom_full = pydicom.dcmread(img_path)
+        original_array = original_dicom_full.pixel_array
+        original_size, modality, bits_stored, bits_allocated, shape = get_image_info_for_exp(img_path)
+
+        if bits_allocated != target_bit_depth:
+            logger.info(f"--- IGNORANDO {os.path.basename(img_path)}: BitsAllocated={bits_allocated}. Requerido: {target_bit_depth} ---")
+            return []
+            
+        secret_message_json = extract_dicom_metadata(original_dicom_full)
+        message_bits_count = len(convert_message_to_bits(secret_message_json))
+        metadata_size_bytes = len(secret_message_json.encode('utf-8'))
+
+        # 2. Iterar sobre os parâmetros BETA e CODECS
+        for beta in betas:
+            for codec_name in codes:
+                
+                # A. ENCODE
+                bin_file_result, original_msg_check, total_encoding_time, stego_array = run_encoder( # <-- NOVO: Captura stego_array
+                    img_path, output_dir, beta, block_size, percentile, codec_name,
+                    debug_mode=debug_mode
+                )
+                
+                if bin_file_result is None:
+                    logger.warning(f"PULANDO: {os.path.basename(img_path)} - Capacidade insuficiente para Beta={beta} e {codec_name}.")
+                    continue
+            
+                # B. DECODE
+                restored_image, decoded_msg_check, decoding_time = run_decoder(
+                    bin_file_result, output_dir, debug_mode=debug_mode 
+                )
+                
+                # C. Extração de Métricas (Stego vs. Original)
+                data_range = 2**bits_stored - 1
+                
+                # C.1 IMPERCEPTIBILIDADE (Stego vs. Original)
+                stego_psnr = psnr(original_array, stego_array, data_range=data_range) # USANDO STEGO ARRAY
+                stego_ssim = ssim(original_array, stego_array, data_range=data_range, channel_axis=None) # USANDO STEGO ARRAY
+                
+                # C.2 FILE METRICS
+                final_bin_size = os.path.getsize(bin_file_result)
+                shape_size = shape[0] * shape[1]
+                
+                bpp = (final_bin_size * 8) / shape_size
+                compression_ratio = original_size / final_bin_size if final_bin_size > 0 else float('inf')
+                
+                original_size_mb = original_size / BYTES_PER_MB
+                encoding_speed_ms_mb = (total_encoding_time * MS_PER_S) / original_size_mb if original_size_mb > 0 else 0
+                decoding_speed_ms_mb = (decoding_time * MS_PER_S) / original_size_mb if original_size_mb > 0 else 0
+                reversibility_check = np.array_equal(original_array, restored_image) 
+                
+                
+                results.append({
+                    'Image_File': os.path.basename(img_path),
+                    'Modality': modality,
+                    'Bits_Stored': bits_stored,
+                    'Original_Size_Bytes': original_size,
+                    'Metadata_Size_Bytes': metadata_size_bytes,
+                    'Message_Size_Bits': message_bits_count,
+                    'Beta': beta,
+                    'Codec': codec_name,
+                    'Percentile': TARGET_PERCENTILE,
+                    'PSNR_dB': stego_psnr, # PSNR/SSIM da Imagem Stego (Imperceptibilidade)
+                    'SSIM': stego_ssim,
+                    'Final_Bin_Size_Bytes': final_bin_size,
+                    'Bpp': bpp,
+                    'CR': compression_ratio,
+                    'Encoding_Speed_ms_MB': encoding_speed_ms_mb,
+                    'Decoding_Speed_ms_MB': decoding_speed_ms_mb,
+                    'Total_Encoding_Time_s': total_encoding_time,
+                    'Decoding_Time_s': decoding_time,
+                    'Reversibility_Check': reversibility_check
+                })
+                
+                logger.info(f"  ✓ {codec_name.upper()} | B={beta} | PSNR_Stego={stego_psnr:.2f}dB | CR={compression_ratio:.2f}x | T_enc_MB={encoding_speed_ms_mb:.0f} ms/MB")
+
+    except Exception as e:
+        logger.error(f"Falha crítica ao processar {os.path.basename(img_path)}: {e}")
+        return []
+    
+    return results
+
+
+def run_full_experiment_mode(output_dir, dataset_dir, codes, betas, block_size, percentile, target_bit_depth, debug_mode):
+    """Executa todos os experimentos em modo sequencial e salva os resultados em CSV."""
+    
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
         
-        if bin_file:
-            # 2. DECODE 
-            orig = pydicom.dcmread(IN_FILE).pixel_array
-            rec, decoded_msg, decode_time = run_decoder(bin_file, OUT_DIR, debug_mode=DEBUG_MODE)
-            
-            # 3. VERIFICAÇÃO FINAL 
-            print("\n" + "="*60)
-            logger.info("FINAL VERIFICATION & PERFORMANCE REPORT")
-            print("-" * 60)
-            
-            logger.info(f"PERFORMANCE: Encode Time: {encode_time:.4f}s | Decode Time: {decode_time:.4f}s")
-            
-            if np.array_equal(orig, rec):
-                logger.info("RESULT: PIXEL DATA: Match (Lossless).")
-            else:
-                diff = np.abs(orig.astype(float) - rec.astype(float)).sum()
-                logger.error(f"RESULT: PIXEL DATA: Mismatch (Sum Diff: {diff})")
-            
-            if original_msg == decoded_msg:
-                logger.info("RESULT: METADATA: Match (100% recovered).")
-            else:
-                logger.error("RESULT: METADATA: Corruption detected.")
-                if DEBUG_MODE:
-                     logger.info(f"    > Orig len: {len(original_msg)} | Rec len: {len(decoded_msg)}")
-            print("="*60 + "\n")
-            
+    image_paths = glob.glob(os.path.join(dataset_dir, '**/*.dcm'), recursive=True)
+    if not image_paths:
+        logger.error(f"Nenhum arquivo .dcm encontrado em '{dataset_dir}'. Verifique o caminho.")
+        return
+
+    all_results = []
+    start_time = time.time()
+    total_images = len(image_paths)
+    
+    logger.info(f"--- INICIANDO EXPERIMENTOS ({total_images} imagens) ---")
+    logger.info(f"Filtro: BitsAllocated = {target_bit_depth}. DEBUG={debug_mode}")
+
+    for i, img_path in enumerate(image_paths):
+        current_index = i + 1
+        img_name = os.path.basename(img_path)
+        
+        logger.info(f"\n[ PROCESSO {current_index}/{total_images} ] Imagem: {img_name}")
+
+        results = process_single_image(img_path, output_dir, codes, betas, block_size, percentile, target_bit_depth, debug_mode)
+        all_results.extend(results)
+
+    total_time = time.time() - start_time
+    
+    if all_results:
+        df = pd.DataFrame(all_results)
+        csv_path = os.path.join(output_dir, 'results_sequential.csv')
+        df.to_csv(csv_path, index=False)
+        
+        logger.info(f"\n{'='*50}")
+        logger.info(f"EXPERIMENTOS CONCLUÍDOS. Tempo total: {total_time:.2f}s")
+        logger.info(f"Resultados salvos em: {csv_path}")
+        logger.info(f"{'='*50}")
     else:
-        logger.error(f"Input file not found: {IN_FILE}")
+        logger.error("Nenhum resultado foi gerado!")
+
+### Bloco Principal de Controle de Execução
+if __name__ == "__main__":
+    
+    MODE = 'EXPERIMENT' # Opções: 'EXPERIMENT' ou 'SINGLE_TEST'
+    
+    # CONFIGURAÇÃO DE TESTE ÚNICO (usado se MODE == 'SINGLE_TEST')
+    SINGLE_TEST_FILE = "images/DX_16b/001.dcm"
+    SINGLE_TEST_CODEC = 'jxl'
+    
+    if MODE == 'EXPERIMENT':
+        run_full_experiment_mode(OUTPUT_DIR, DATASET_DIR, CODECS_TO_TEST, BETAS_TO_TEST, BLOCK_SIZE, TARGET_PERCENTILE, TARGET_BIT_DEPTH, debug_mode=False)
+        
+    elif MODE == 'SINGLE_TEST':
+        if os.path.exists(SINGLE_TEST_FILE):
+            # Executa o encoder e depois o decoder para um teste de ponta a ponta
+            bin_file_path, _, _, _ = run_encoder(
+                SINGLE_TEST_FILE, OUTPUT_DIR, BETAS_TO_TEST[0], BLOCK_SIZE, TARGET_PERCENTILE, SINGLE_TEST_CODEC, debug_mode=True
+            )
+            if bin_file_path:
+                run_decoder(bin_file_path, OUTPUT_DIR, debug_mode=False)
+
+        else:
+            logger.error(f"Arquivo de teste único não encontrado: {SINGLE_TEST_FILE}")
