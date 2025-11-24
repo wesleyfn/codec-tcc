@@ -146,8 +146,8 @@ psnr_data = df.groupby(['Beta', 'Modality'])['PSNR_dB'].agg(['mean', 'std']).res
 
 figure = sns.catplot(
     data=df,
-    x='PSNR_dB',
-    y='Modality',
+    y='PSNR_dB',
+    x='Modality',
     hue='Beta',
     kind='bar',
     alpha=0.8,
@@ -156,14 +156,27 @@ figure = sns.catplot(
     legend_out=False,
     errorbar=('sd'),
 )
-plt.xlabel('PSNR da Imagem Esteganografada (dB)')
-plt.ylabel('Modalidade')
+plt.ylabel('PSNR da Imagem Esteganografada (dB)')
+plt.xlabel('Modalidade')
 plt.legend(title='Beta')
-figure.set(xlim=(20, None)) # Ajusta o eixo X para melhor visualização
+
+# Adiciona rótulos de desvio padrão em cima de cada barra
+betas = sorted(psnr_data['Beta'].unique())
+for i, c in enumerate(figure.ax.containers):
+    beta_value = betas[i]
+    # Filtra as estatísticas para o beta atual e ordena pela modalidade
+    labels = psnr_data[psnr_data['Beta'] == beta_value].set_index('Modality').loc[modality_order]['std'].map(lambda x: f'±{x:.2f}')
+    
+    # Adiciona os rótulos a cada barra no container
+    for bar, label in zip(c, labels):
+        x = (bar.get_x() + bar.get_width() / 2) - 0.025
+        y = bar.get_height() + 0.1
+        figure.ax.text(x, y, label, ha='center', va='bottom', rotation=90, fontsize=8, color='black')
 
 print("\n--- Tabela de PSNR Médio (dB) ---")
 psnr_table = psnr_data.pivot(index='Beta', columns='Modality', values='mean')
 print(psnr_table)
+
 
 plt.show()
 

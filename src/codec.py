@@ -294,7 +294,7 @@ def compress_image_data(img: np.ndarray, codec: str) -> bytes:
     logger.info(f"  > Compressing ({codec.upper()})...")
     t0 = time.time()
     
-    if codec == 'jxl': data = imagecodecs.jpegxl_encode(img, lossless=True, numthreads=0, photometric='GRAY', usecontainer=False, effort=6)
+    if codec == 'jxl': data = imagecodecs.jpegxl_encode(img, lossless=True, numthreads=0, photometric='GRAY', usecontainer=False)
     elif codec == 'jls': data = imagecodecs.jpegls_encode(img)
     elif codec == 'j2k': data = imagecodecs.jpeg2k_encode(img, reversible=True, numthreads=0)
     elif codec == 'png': data = imagecodecs.png_encode(img)
@@ -860,8 +860,8 @@ if __name__ == "__main__":
     
     MODE = 'SINGLE_TEST' # Opções: 'EXPERIMENT' ou 'SINGLE_TEST'
     
-    SINGLE_TEST_FILE = "images/DX_16b/000.dcm"
-    SINGLE_TEST_CODEC = 'jls'
+    SINGLE_TEST_FILE = "images/DX_16b/007.dcm"
+    SINGLE_TEST_CODEC = 'jxl'
     
     if MODE == 'EXPERIMENT':
         run_full_experiment_mode(OUTPUT_DIR, DATASET_DIR, CODECS_TO_TEST, BETAS_TO_TEST, BLOCK_SIZE, TARGET_PERCENTILE, TARGET_BIT_DEPTH, debug_mode=False)
