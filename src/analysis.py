@@ -5,13 +5,14 @@ import numpy as np
 
 # Carregar os dados
 df = pd.read_csv('tcc_results/results_sequential.csv')
+df = df.where(df['Beta'] == 0.2)
 
 # Calcular Bpp teórico original (para comparação)
 # Assumindo que Bits_Stored é a profundidade de bits original
 df['Bpp_Original'] = df['Bits_Stored']
 
 # Calcular eficiência de compressão
-df['Eficiencia_Bpp'] = (df['Bpp_Original'] - df['Bpp']) / df['Bpp_Original'] * 100
+df['Eficiencia_Bpp'] = (16 - df['Bpp']) / 16 * 100
 
 # Ordenar Codecs
 df = df.sort_values(by='Bpp', ascending=False)

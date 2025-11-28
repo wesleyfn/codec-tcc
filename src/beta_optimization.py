@@ -92,11 +92,11 @@ def plot_results(df):
 
     for i, mod in enumerate(modalities):
         ax1 = axes[i]
-        subset = df[df['Modality_Label'] == mod].sort_values('Parameter_Beta')
+        subset = df[df['Modality_Label'] == mod].sort_values('Beta')
         
         # Eixo Y1: PSNR (Qualidade)
         color_psnr = 'tab:blue'
-        l1 = ax1.plot(subset['Parameter_Beta'], subset['Stego_Image_PSNR_dB'], 
+        l1 = ax1.plot(subset['Beta'], subset['PSNR_dB'], 
                  marker='o', color=color_psnr, label='PSNR (dB)', linewidth=2)
         ax1.set_xlabel('Parâmetro Beta (β)', fontsize=12)
         ax1.set_ylabel('PSNR (dB)', color=color_psnr, fontsize=12)
@@ -112,7 +112,7 @@ def plot_results(df):
         
         ax2 = ax1.twinx()
         color_bpp = 'tab:red'
-        l2 = ax2.plot(subset['Parameter_Beta'], subset['Bpp'], 
+        l2 = ax2.plot(subset['Beta'], subset['Bpp'], 
                  marker='s', linestyle='--', color=color_bpp, label='Bpp (Final)', alpha=0.7)
         
         if i == len(modalities) - 1: # Rotulo apenas no último para não poluir
@@ -125,7 +125,7 @@ def plot_results(df):
         # ou onde o Bpp estabiliza.
         
         # Anotação de valores no gráfico
-        for x, y_psnr, y_bpp in zip(subset['Parameter_Beta'], subset['Stego_Image_PSNR_dB'], subset['Bpp']):
+        for x, y_psnr, y_bpp in zip(subset['Beta'], subset['PSNR_dB'], subset['Bpp']):
             if x in [0.2, 0.5, 0.8]: # Anota apenas alguns pontos chave para não poluir
                 ax1.annotate(f"{y_psnr:.1f}dB", (x, y_psnr), textcoords="offset points", xytext=(0,10), ha='center', color=color_psnr, fontsize=8)
                 ax2.annotate(f"{y_bpp:.1f}", (x, y_bpp), textcoords="offset points", xytext=(0,-15), ha='center', color=color_bpp, fontsize=8)
