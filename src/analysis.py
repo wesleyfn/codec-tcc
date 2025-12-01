@@ -182,6 +182,82 @@ print(psnr_table)
 plt.show()
 
 
+# --- Gráfico e Tabela de MSE ---
+
+mse_data = df.groupby(['Beta', 'Modality'])['MSE'].agg(['mean', 'std']).reset_index()
+
+figure = sns.catplot(
+    data=df,
+    y='MSE',
+    x='Modality',
+    hue='Beta',
+    kind='bar',
+    alpha=0.8,
+    aspect=1.8,
+    legend=True,
+    legend_out=False,
+    errorbar=('sd'),
+)
+plt.ylabel('MSE da Imagem Esteganografada')
+plt.xlabel('Modalidade')
+plt.legend(title='Beta')
+
+# Adiciona rótulos de desvio padrão em cima de cada barra
+betas = sorted(mse_data['Beta'].unique())
+for i, c in enumerate(figure.ax.containers):
+    beta_value = betas[i]
+    # Filtra as estatísticas para o beta atual e ordena pela modalidade
+    labels = mse_data[mse_data['Beta'] == beta_value].set_index('Modality').loc[modality_order]['std'].map(lambda x: f'±{x:.2f}')
+    
+    # Adiciona os rótulos a cada barra no container
+    for bar, label in zip(c, labels):
+        x = (bar.get_x() + bar.get_width() / 2) - 0.025
+        y = bar.get_height() + 0.1
+        figure.ax.text(x, y, label, ha='center', va='bottom', rotation=90, fontsize=8, color='black')
+
+print("\n--- Tabela de MSE Médio ---")
+mse_table = mse_data.pivot(index='Beta', columns='Modality', values='mean')
+print(mse_table)
+
+plt.show()
+
+
+# --- ANÁLISE DE OUTLIERS ---
+
+def find_outliers_iqr(df, metric):
+    """Encontra outliers em uma métrica usando o método IQR, agrupado por Codec e Modalidade."""
+    # Agrupa por Codec e Modalidade para calcular os limites por grupo
+    grouped = df.groupby(['Codec', 'Modality'])
+    
+    # Calcula Q1, Q3 e IQR para a métrica em cada grupo
+    q1 = grouped[metric].transform('quantile', 0.25)
+    q3 = grouped[metric].transform('quantile', 0.75)
+    iqr = q3 - q1
+    
+    # Define os limites para detecção de outliers
+    lower_bound = q1 - 1.5 * iqr
+    upper_bound = q3 + 1.5 * iqr
+    
+    # Filtra o DataFrame para encontrar os outliers
+    outliers = df[(df[metric] < lower_bound) | (df[metric] > upper_bound)]
+    
+    return outliers
+
+print("\n" + "="*50)
+print("--- BUSCA POR OUTLIERS (MÉTODO IQR) ---")
+print("="*50)
+
+metrics_to_check = ['Bpp', 'PSNR_dB', 'Encoding_Speed_ms_MB', 'Decoding_Speed_ms_MB']
+
+for metric in metrics_to_check:
+    outliers_df = find_outliers_iqr(df, metric)
+    print(f"\n[!] Outliers encontrados para a métrica: '{metric}'")
+    if not outliers_df.empty:
+        print(outliers_df[['Image_File', 'Codec', 'Modality', metric]].round(2))
+    else:
+        print("    -> Nenhum outlier encontrado.")
+
+
 """ # --- Gráfico de Dispersão Facetado: Bpp vs. Tempo de Codificação ---
 
 modalities = df['Modality'].cat.categories
