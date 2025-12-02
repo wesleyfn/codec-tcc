@@ -79,6 +79,9 @@ def plot_bpp_cr_comparison():
     plt.show()
 
 
+    
+
+
 def plot_encoding_speed():
     # 1. Configuração do Caminho do Arquivo
     csv_path = 'results_sequential.csv'

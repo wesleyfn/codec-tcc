@@ -8,11 +8,11 @@ import imagecodecs
 import glob
 import pandas as pd
 import numpy as np
-from datetime import datetime
-from typing import List
-
 import matplotlib.pyplot as plt
 import pydicom
+
+from datetime import datetime
+from typing import List
 from pydicom.dataset import FileDataset, FileMetaDataset
 from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 from skimage.metrics import peak_signal_noise_ratio as psnr, structural_similarity as ssim, mean_squared_error as mse
@@ -959,9 +959,9 @@ def run_full_experiment_mode(output_dir, dataset_dir, codes, betas, block_size, 
 ### Bloco Principal de Controle de Execução
 if __name__ == "__main__":
     
-    MODE = 'EXPERIMENT' # Opções: 'EXPERIMENT' ou 'SINGLE_TEST'
+    MODE = 'SINGLE_TEST' # Opções: 'EXPERIMENT' ou 'SINGLE_TEST'
     
-    SINGLE_TEST_FILE = "images/MG/000.dcm"
+    SINGLE_TEST_FILE = "images/CT/003.dcm"
     SINGLE_TEST_CODEC = 'jxl'
     
     if MODE == 'EXPERIMENT':
