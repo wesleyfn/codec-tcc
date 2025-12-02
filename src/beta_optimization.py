@@ -79,6 +79,12 @@ def run_beta_analysis():
     # Salva CSV bruto para referência
     df.to_csv("beta_analysis_raw.csv", index=False)
     
+    # Exibe a tabela de resultados no console
+    print("\n--- Tabela de Resultados da Análise de Beta ---")
+    with pd.option_context('display.max_rows', None, 'display.width', 1000):
+        print(df[['Modality_Label', 'Beta', 'PSNR_dB', 'SSIM', 'MSE', 'Bpp', 'CR']].round(4))
+    print("------------------------------------------------\n")
+    
     plot_results(df)
 
 def plot_results(df):
