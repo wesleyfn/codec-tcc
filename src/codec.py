@@ -534,9 +534,29 @@ def embed_message_in_planes(planes, msg_bits, allowed):
         raise ValueError("Capacity Overflow")
     
     n_planes = len(planes)
-    base = len(msg_bits) // n_planes
-    rem = len(msg_bits) % n_planes
-    seg_lens = [base + 1 if i < rem else base for i in range(n_planes)]
+    total_msg_bits = len(msg_bits)
+
+    # Calculate quadratic weights: higher weights for lower bit planes (more significant)
+    # Weights are (n_planes - 1 - i)^2 + 1 to ensure positive weights and decreasing importance
+    weights = [(n_planes - 1 - i)**2 + 1 for i in range(n_planes)]
+    total_weight = sum(weights)
+
+    # Calculate ideal float distribution
+    seg_lens_float = [total_msg_bits * w / total_weight for w in weights]
+    
+    # Initialize integer segments by taking floor
+    seg_lens = [int(s) for s in seg_lens_float]
+    
+    # Calculate remaining bits to distribute
+    remaining_bits = total_msg_bits - sum(seg_lens)
+    
+    # Distribute remaining bits to the first 'remaining_bits' planes
+    # This ensures the sum is exactly total_msg_bits and maintains the bias towards earlier planes
+    for i in range(remaining_bits):
+        seg_lens[i] += 1
+    
+    # Ensure no segment is negative (should not happen with this logic if total_msg_bits >= 0)
+    seg_lens = [max(0, s) for s in seg_lens]
     
     logger.info(f"  > Embedding Distribution:")
     for i, l in enumerate(seg_lens):
@@ -894,7 +914,8 @@ def process_single_image(img_path, output_dir, codes, betas, block_size, percent
                     'Percentile': percentile,
                     'PSNR_dB': stego_psnr,
                     'SSIM': stego_ssim,
-                    'MSE': stego_mse,          # Agora estará na escala 0.00xxx
+                    'Restored_PSNR_dB': psnr(orig_norm, rest_norm, data_range=1.0),
+                    'MSE': stego_mse,         
                     'Restored_MSE': restored_mse,
                     'Final_Bin_Size_Bytes': final_bin_size,
                     'Bpp': bpp,
@@ -959,7 +980,7 @@ def run_full_experiment_mode(output_dir, dataset_dir, codes, betas, block_size, 
 ### Bloco Principal de Controle de Execução
 if __name__ == "__main__":
     
-    MODE = 'SINGLE_TEST' # Opções: 'EXPERIMENT' ou 'SINGLE_TEST'
+    MODE = 'EXPERIMENT' # Opções: 'EXPERIMENT' ou 'SINGLE_TEST'
     
     SINGLE_TEST_FILE = "images/CT/003.dcm"
     SINGLE_TEST_CODEC = 'jxl'
