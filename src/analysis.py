@@ -2,278 +2,244 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import os
+import numpy as np
 
-def plot_bpp_cr_comparison():
-    # 1. Configuração do Caminho do Arquivo
-    csv_path = 'results_sequential.csv'
-    if not os.path.exists(csv_path):
-        csv_path = os.path.join('tcc_results', 'results_sequential.csv')
+# --- 1. Configuração Global e Estilo ---
+def setup_style():
+    sns.set_theme(style="whitegrid", context="talk", font_scale=0.9)
+    plt.rcParams['font.family'] = 'sans-serif'
+    plt.rcParams['figure.dpi'] = 300
+    plt.rcParams['savefig.bbox'] = 'tight'
+    plt.rcParams['axes.titlesize'] = 14
+    plt.rcParams['axes.labelsize'] = 12
     
-    if not os.path.exists(csv_path):
-        print(f"Erro: Arquivo CSV 'results_sequential.csv' não encontrado.")
-        return
+    return {
+        'codec_palette': 'Set2',
+        'beta_palette': 'viridis'
+    }
 
-    # 2. Carregar e Filtrar Dados
-    df = pd.read_csv(csv_path)
+PALETTES = setup_style()
+
+def load_data():
+    possible_paths = [
+        'tcc_results/results_sequential.csv',
+    ]
+    
+    df = None
+    for path in possible_paths:
+        if os.path.exists(path):
+            print(f"Dados carregados de: {path}")
+            df = pd.read_csv(path)
+            break
+            
+    if df is None:
+        print("ERRO: 'results_sequential.csv' não encontrado.")
+        return None
+
+    codec_map = {'jxl': 'JPEG XL', 'jls': 'JPEG-LS', 'j2k': 'JPEG 2000'}
+    if 'Codec' in df.columns:
+        df['Codec'] = df['Codec'].map(lambda x: codec_map.get(x, x))
+        
+    return df
+
+# --- 2. Helper de Labels Inteligente ---
+def add_labels(ax, fmt='%.2f', centered=True):
+    """
+    Adiciona valores nas barras.
+    centered=True -> No meio (Branco, Negrito) -> Para gráficos com desvio padrão
+    centered=False -> No topo (Preto, Normal) -> Para gráficos exatos
+    """
+    for c in ax.containers:
+        if centered:
+            ax.bar_label(c, fmt=fmt, label_type='center', color='white', weight='bold', fontsize=10)
+        else:
+            ax.bar_label(c, fmt=fmt, label_type='edge', padding=2, color='black', fontsize=10)
+
+# --- 3. Funções de Plotagem ---
+
+def plot_efficiency(df):
+    """Fig 1: Bpp e CR (Com Desvio -> Centro)"""
     df_plot = df[df['Beta'] == 0.2].copy()
-
-    # 3. Gerar e Imprimir Tabela de Resumo
-    summary_table = df_plot.groupby(['Modality', 'Codec']).agg(
-        Mean_Bpp=('Bpp', 'mean'),
-        Mean_CR=('CR', 'mean'),
-        Mean_Metadata_Size_Bytes=('Metadata_Size_Bytes', 'mean')
-    ).reset_index()
     
-    summary_table['Mean_Bpp'] = summary_table['Mean_Bpp'].map('{:.3f}'.format)
-    summary_table['Mean_CR'] = summary_table['Mean_CR'].map('{:.2f}'.format)
-    summary_table['Mean_Metadata_Size_Bytes'] = summary_table['Mean_Metadata_Size_Bytes'].map('{:,.0f}'.format).str.replace(',', '.')
-
-    modality_order = ['CT', 'DX', 'MG']
-    summary_table['Modality'] = pd.Categorical(summary_table['Modality'], categories=modality_order, ordered=True)
-    summary_table = summary_table.sort_values(['Modality', 'Codec'])
-
-    print("\n" + "="*80)
-    print("Tabela 1: Comparativo de Bpp, Taxa de Compressão (CR) e Tamanho Médio dos Metadados")
-    print("Agrupado por Modalidade e Codec (Beta = 0.2)")
-    print("-"*80)
-    print(summary_table.to_string(index=False))
-    print("="*80)
-
-    # 4. Configuração Estética do Gráfico
-    sns.set_theme(style="whitegrid")
     fig, axes = plt.subplots(1, 2, figsize=(12, 6))
-    codec_order = ['JPEG XL', 'JPEG-LS', 'JPEG 2000'] 
+    order = ['CT', 'DX', 'MG']
+    hue_order = ['JPEG XL', 'JPEG-LS', 'JPEG 2000']
+    
+    # Bpp
+    sns.barplot(data=df_plot, x='Modality', y='Bpp', hue='Codec', 
+                order=order, hue_order=hue_order, ax=axes[0], 
+                palette=PALETTES['codec_palette'], errorbar=('ci', 95), capsize=.05, alpha=0.8)
+    axes[0].set_title('(a) Bits por Pixel (bpp)')
+    axes[0].set_ylabel('Bits por Pixel (bpp)')
+    axes[0].legend(loc='upper right', frameon=True, fontsize=10)
+    axes[0].set_xlabel('Modalidade')
+    add_labels(axes[0], fmt='%.2f', centered=True) # Com desvio -> Centro
 
+    
+    # CR
+    sns.barplot(data=df_plot, x='Modality', y='CR', hue='Codec', 
+                order=order, hue_order=hue_order, ax=axes[1], 
+                palette=PALETTES['codec_palette'], errorbar=('ci', 95), capsize=.05, alpha=0.8)
+    axes[1].set_title('(b) Taxa de Compressão (CR)')
+    axes[1].set_ylabel('Taxa de Compressão (CR)')
+    axes[1].legend(loc='upper left', frameon=True, fontsize=10)
+    axes[1].set_xlabel('Modalidade')
+    add_labels(axes[1], fmt='%.1f', centered=True) # Com desvio -> Centro
+    
+    plt.tight_layout()
+    plt.savefig('fig_1_eficiencia_compressao.png')
+    print("Salvo: fig_1_eficiencia_compressao.png")
+
+def plot_performance(df):
+    """Fig 2: Velocidade de Codificação (Com Desvio -> Centro)"""
+    df_plot = df[df['Beta'] == 0.2].copy()
+    
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+    order = ['CT', 'DX', 'MG']
+    hue_order = ['JPEG XL', 'JPEG-LS', 'JPEG 2000']
+
+    # Encoding
+    sns.barplot(data=df_plot, y='Modality', x='Encoding_Speed_ms_MB', hue='Codec', 
+                order=order, hue_order=hue_order, ax=axes[0], 
+                palette=PALETTES['codec_palette'], errorbar=('ci', 95), capsize=.05, alpha=0.8)
+    axes[0].set_title('(a) Velocidade de Codificação por Modalidade')
+    axes[0].set_xlabel('Tempo (ms/MB)')
+    axes[0].legend(loc='lower right', frameon=True, fontsize=10)
+    axes[0].set_ylabel('Modalidade')
+    add_labels(axes[0], fmt='%.0f', centered=True)
+
+
+    # Decoding
+    sns.barplot(data=df_plot, y='Modality', x='Decoding_Speed_ms_MB', hue='Codec', 
+                order=order, hue_order=hue_order, ax=axes[1], 
+                palette=PALETTES['codec_palette'], errorbar=('ci', 95), capsize=.05, alpha=0.8)
+    axes[1].set_title('(b) Velocidade de Decodificação por Modalidade')
+    axes[1].set_xlabel('Tempo (ms/MB)')
+    axes[1].legend(loc='lower right', frameon=True, fontsize=10)
+    axes[1].set_ylabel('Modalidade')
+    add_labels(axes[1], fmt='%.0f', centered=True)
+    
+    plt.tight_layout()
+    plt.savefig('fig_3_desempenho.png')
+    print("Salvo: fig_3_desempenho.png")
+
+def plot_quality_tradeoff(df):
+    """Fig 3: Qualidade por Beta (Com Desvio -> Centro)"""
+    df_plot = df[df['Beta'] == 0.2].copy()
+    df_plot = df[df['Codec'] == 'JPEG XL'].groupby(['Modality', 'Beta'])[['MSE', 'PSNR_dB', 'SSIM']].mean().reset_index()
+    df_plot['Beta'] = df_plot['Beta'].astype(str)
+    
+    fig, ax = plt.subplots(1, 1, figsize=(12, 6))
+    order = ['CT', 'DX', 'MG']
+    
+    # MSE
+    sns.barplot(data=df_plot, x='Modality', y='MSE', hue='Beta',
+                order=order, ax=ax, palette='Reds')
+    ax.set_title('Erro Quadrático (MSE)')
+    ax.set_ylabel('MSE')
+    ax.set_xlabel('Modalidade')
+    add_labels(ax, fmt='%.6f', centered=False) # Com desvio -> Centro
+    ax.legend(title='Beta', loc='upper right', frameon=True, fontsize=10)
+
+    plt.tight_layout()
+    plt.savefig('fig_3_qualidade_beta.png')
+    print("Salvo: fig_3_qualidade_beta.png")
+
+def plot_ssim_combined(df):
+    """Fig 4: SSIM (Painel A com Desvio -> Centro; Painel B Fixo -> Topo)"""
+    df['Restored_SSIM'] = 1.0 
+    
+    df['Beta_Label'] = df['Beta'].apply(lambda x: f"Beta {x}")
+    modality_order = ['CT', 'DX', 'MG']
+
+    fig, ax = plt.subplots(1, 1, figsize=(12, 6))
+
+    # --- GRÁFICO 2: Reversibilidade (Sem Desvio - Valor Fixo 1.0) ---
     sns.barplot(
-        data=df_plot, x='Modality', y='Bpp', hue='Codec',
-        order=modality_order, hue_order=codec_order, ax=axes[0],
-        errorbar=('ci', 95), capsize=.1,
+        data=df,
+        x='Modality',
+        y='Restored_SSIM',
+        hue='Codec',
+        order=modality_order,
+        palette='Blues',
+        ax=ax,
+        errorbar=None
     )
-    axes[0].set_title('Bits por Pixel (Bpp) - Menor é Melhor', fontsize=14, fontweight='bold')
+    
+    ax.set_title('Reversibilidade da Imagem Recuperada', fontsize=13)
+    ax.set_xlabel('Modalidade')
+    ax.set_ylabel('SSIM (Ideal = 1.0)')
+    ax.set_ylim(0.0, 1.1) 
+    ax.legend(title='Codec', loc='lower right', fontsize=10)
+    
+    # Sem desvio -> Topo (Edge)
+    add_labels(ax, fmt='%.1f', centered=False)
+
+    plt.tight_layout()
+    plt.savefig('fig_ssim_recupered.png')
+    print("Salvo: fig_ssim_recupered.png")
+
+def plot_psnr_ssim_stego(df):
+    """Gera gráfico combinado de PSNR e SSIM da Imagem Portadora"""
+    
+    # Agrupa por Modalidade e Beta (média dos codecs)
+    # A qualidade esteganográfica (LGE) é independente do codec lossless usado depois
+    df_plot = df.groupby(['Modality', 'Beta'])[['PSNR_dB', 'SSIM']].mean().reset_index()
+    df_plot['Beta'] = df_plot['Beta'].astype(str)
+    
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+    order = ['CT', 'DX', 'MG']
+    
+    # --- GRÁFICO 1 (ESQUERDA): PSNR ---
+    sns.barplot(
+        data=df_plot, 
+        x='Modality', 
+        y='PSNR_dB', 
+        hue='Beta', 
+        order=order, 
+        ax=axes[0], 
+        palette='Blues'
+    )
+    axes[0].set_title('(a) Pico de Relação Sinal-Ruído (PSNR)', fontsize=13)
     axes[0].set_xlabel('Modalidade', fontsize=12)
-    axes[0].set_ylabel('Bits por Pixel', fontsize=12)
-    axes[0].legend(title='Codec', loc='upper right')
-    axes[0].grid(axis='y', linestyle='--', alpha=0.7)
-
+    axes[0].set_ylabel('PSNR (dB)', fontsize=12)
+    axes[0].set_ylim(30, 100) # Ajuste de escala para visualização
+    axes[0].legend(title='Beta', loc='lower right', fontsize=10)
+    
+    add_labels(axes[0], fmt='%.1f', centered=False) # Labels no centro (branco)
+    
+    # --- GRÁFICO 2 (DIREITA): SSIM ---
     sns.barplot(
-        data=df_plot, x='Modality', y='CR', hue='Codec',
-        order=modality_order, hue_order=codec_order, ax=axes[1],
-        errorbar=('ci', 95), capsize=.1,
+        data=df_plot, 
+        x='Modality', 
+        y='SSIM', 
+        hue='Beta', 
+        order=order, 
+        ax=axes[1], 
+        palette='Greens'
     )
-    axes[1].set_title('Taxa de Compressão (CR) - Maior é Melhor', fontsize=14, fontweight='bold')
+    axes[1].set_title('(b) Similaridade Estrutural (SSIM)', fontsize=13)
     axes[1].set_xlabel('Modalidade', fontsize=12)
-    axes[1].set_ylabel('Taxa de Compressão (x:1)', fontsize=12)
-    axes[1].legend(title='Codec', loc='upper left')
-    axes[1].grid(axis='y', linestyle='--', alpha=0.7)
+    axes[1].set_ylabel('SSIM', fontsize=12)
+    axes[1].set_ylim(0.95, 1.002) # Zoom para ver as diferenças sutis
+    axes[1].legend(title='Beta', loc='lower right', fontsize=10)
+    
+    add_labels(axes[1], fmt='%.4f', centered=False) # Labels no centro com 4 casas decimais
 
-    # 5. Salvar
+    # Finalização
     plt.tight_layout()
-    output_filename = 'grafico_bpp_cr_lado_a_lado.png'
+    
+    output_filename = 'fig_4_qualidade_psnr_ssim.png'
     plt.savefig(output_filename, bbox_inches='tight', dpi=300)
-    print(f"\nSucesso! Gráfico salvo como: {output_filename}")
-    plt.show()
-
-def plot_encoding_speed():
-    # 1. Configuração do Caminho do Arquivo
-    csv_path = 'results_sequential.csv'
-    if not os.path.exists(csv_path):
-        csv_path = os.path.join('tcc_results', 'results_sequential.csv')
-    
-    if not os.path.exists(csv_path):
-        print(f"Erro: Arquivo CSV 'results_sequential.csv' não encontrado.")
-        return
-
-    # 2. Carregar e Filtrar Dados
-    df = pd.read_csv(csv_path)
-    df_plot = df[df['Beta'] == 0.2].copy()
-
-    # 3. Gerar e Imprimir Tabela de Resumo
-    summary_table = df_plot.groupby(['Modality', 'Codec']).agg(
-        Mean_Encoding_Speed_ms_MB=('Encoding_Speed_ms_MB', 'mean')
-    ).reset_index()
-
-    summary_table['Mean_Encoding_Speed_ms_MB'] = summary_table['Mean_Encoding_Speed_ms_MB'].map('{:.2f}'.format)
-    
-    modality_order = ['CT', 'DX', 'MG']
-    summary_table['Modality'] = pd.Categorical(summary_table['Modality'], categories=modality_order, ordered=True)
-    summary_table = summary_table.sort_values(['Modality', 'Codec'])
-
-    print("\n" + "="*80)
-    print("Tabela 2: Velocidade de Codificação (ms/MB)")
-    print("Agrupado por Modalidade e Codec (Beta = 0.2)")
-    print("-"*80)
-    print(summary_table.to_string(index=False))
-    print("="*80)
-
-    # 4. Configuração Estética
-    sns.set_theme(style="whitegrid")
-    plt.figure(figsize=(10, 6))
-    codec_order = ['JPEG XL', 'JPEG-LS', 'JPEG 2000'] 
-
-    ax = sns.barplot(
-        data=df_plot, y='Modality', x='Encoding_Speed_ms_MB', hue='Codec',
-        order=modality_order, hue_order=codec_order,
-        errorbar=('ci', 95), capsize=.1,
-    )
-    
-    ax.set_title('Velocidade de Codificação - Menor é Melhor', fontsize=14, fontweight='bold')
-    plt.ylabel('Modalidade', fontsize=12)
-    plt.xlabel('Tempo de Processamento (ms/MB)', fontsize=12)
-    plt.legend(title='Codec', loc='lower right')
-    plt.grid(axis='x', linestyle='--', alpha=0.7)
-
-    # 5. Salvar e Mostrar
-    plt.tight_layout()
-    output_filename = 'grafico_velocidade_codificacao.png'
-    plt.savefig(output_filename, bbox_inches='tight', dpi=300)
-    print(f"\nGráfico gerado: {output_filename}")
-    plt.show()
-
-def plot_decoding_speed():
-    # 1. Configuração do Caminho do Arquivo
-    csv_path = 'results_sequential.csv'
-    if not os.path.exists(csv_path):
-        csv_path = os.path.join('tcc_results', 'results_sequential.csv')
-    
-    if not os.path.exists(csv_path):
-        print(f"Erro: Arquivo CSV 'results_sequential.csv' não encontrado.")
-        return
-
-    # 2. Carregar e Filtrar Dados
-    df = pd.read_csv(csv_path)
-    df_plot = df[df['Beta'] == 0.2].copy()
-
-    # 3. Gerar e Imprimir Tabela de Resumo
-    summary_table = df_plot.groupby(['Modality', 'Codec']).agg(
-        Mean_Decoding_Speed_ms_MB=('Decoding_Speed_ms_MB', 'mean')
-    ).reset_index()
-
-    summary_table['Mean_Decoding_Speed_ms_MB'] = summary_table['Mean_Decoding_Speed_ms_MB'].map('{:.2f}'.format)
-    
-    modality_order = ['CT', 'DX', 'MG']
-    summary_table['Modality'] = pd.Categorical(summary_table['Modality'], categories=modality_order, ordered=True)
-    summary_table = summary_table.sort_values(['Modality', 'Codec'])
-    
-    print("\n" + "="*80)
-    print("Tabela 3: Velocidade de Decodificação (ms/MB)")
-    print("Agrupado por Modalidade e Codec (Beta = 0.2)")
-    print("-"*80)
-    print(summary_table.to_string(index=False))
-    print("="*80)
-
-    # 4. Configuração Estética
-    sns.set_theme(style="whitegrid", palette="muted")
-    plt.figure(figsize=(10, 6))
-    codec_order = ['JPEG XL', 'JPEG-LS', 'JPEG 2000'] 
-
-    ax = sns.barplot(
-        data=df_plot, y='Modality', x='Decoding_Speed_ms_MB', hue='Codec',
-        order=modality_order, hue_order=codec_order,
-        errorbar=('ci', 95), capsize=.1, palette='pastel'
-    )
-    
-    ax.set_title('Velocidade de Decodificação - Menor é Melhor', fontsize=14, fontweight='bold')
-    plt.ylabel('Modalidade', fontsize=12)
-    plt.xlabel('Tempo de Decodificação (ms/MB)', fontsize=12)
-    plt.legend(title='Codec', loc='lower right')
-    plt.grid(axis='x', linestyle='--', alpha=0.7)
-
-    # 5. Salvar
-    plt.tight_layout()
-    output_filename = 'grafico_velocidade_decodificacao.png'
-    plt.savefig(output_filename, bbox_inches='tight', dpi=300)
-    print(f"\nSucesso! Gráfico salvo como: {output_filename}")
-    plt.show()
-
-def plot_quality_by_beta():
-    # 1. Configuração do Caminho do Arquivo
-    csv_path = 'results_sequential.csv'
-    if not os.path.exists(csv_path):
-        csv_path = os.path.join('tcc_results', 'results_sequential.csv')
-    
-    if not os.path.exists(csv_path):
-        print(f"Erro: Arquivo CSV 'results_sequential.csv' não encontrado.")
-        return
-
-    # 2. Carregar Dados
-    df = pd.read_csv(csv_path)
-
-    # 3. Gerar e Imprimir Tabela de Resumo
-    summary_table = df.groupby(['Modality', 'Beta']).agg(
-        Mean_MSE=('MSE', 'mean'),
-        Mean_PSNR_dB=('PSNR_dB', 'mean'),
-        Mean_SSIM=('SSIM', 'mean'),
-        Mean_Metadata_Size_Bytes=('Metadata_Size_Bytes', 'mean')
-    ).reset_index()
-
-    summary_table['Mean_MSE'] = summary_table['Mean_MSE'].map('{:.6f}'.format)
-    summary_table['Mean_PSNR_dB'] = summary_table['Mean_PSNR_dB'].map('{:.2f}'.format)
-    summary_table['Mean_SSIM'] = summary_table['Mean_SSIM'].map('{:.4f}'.format)
-    summary_table['Mean_Metadata_Size_Bytes'] = summary_table['Mean_Metadata_Size_Bytes'].map('{:,.0f}'.format).str.replace(',', '.')
-
-    modality_order = ['CT', 'DX', 'MG']
-    summary_table['Modality'] = pd.Categorical(summary_table['Modality'], categories=modality_order, ordered=True)
-    summary_table = summary_table.sort_values(['Modality', 'Beta'])
-    
-    print("\n" + "="*80)
-    print("Tabela 4: Impacto do Beta na Qualidade da Imagem e Tamanho dos Metadados")
-    print("Agrupado por Modalidade e Beta")
-    print("-"*80)
-    print(summary_table.to_string(index=False))
-    print("="*80)
-    
-    # 4. Preparação dos Dados para o Gráfico
-    df_plot = df.groupby(['Image_File', 'Modality', 'Beta'])[['MSE', 'PSNR_dB', 'SSIM']].mean().reset_index()
-    df_plot['Beta_Label'] = df_plot['Beta'].apply(lambda x: f"Beta = {x}")
-
-    # 5. Configuração Estética
-    sns.set_theme(style="whitegrid", palette="muted")
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-    
-    sns.barplot(
-        data=df_plot, x='Modality', y='MSE', hue='Beta_Label',
-        order=modality_order, ax=axes[0], palette='Reds',
-        errorbar=('ci', 95), capsize=.1
-    )
-    axes[0].set_title('Erro Quadrático Médio (MSE)\nMenor é Melhor', fontsize=11, fontweight='bold')
-    axes[0].set_xlabel('Modalidade', fontsize=10)
-    axes[0].set_ylabel('MSE', fontsize=10)
-    axes[0].legend(title='Beta')
-    
-    sns.barplot(
-        data=df_plot, x='Modality', y='PSNR_dB', hue='Beta_Label',
-        order=modality_order, ax=axes[1], palette='Blues',
-        errorbar=('ci', 95), capsize=.1
-    )
-    axes[1].set_title('Pico de Relação Sinal-Ruído (PSNR)\nMaior é Melhor', fontsize=11, fontweight='bold')
-    axes[1].set_xlabel('Modalidade', fontsize=10)
-    axes[1].set_ylabel('PSNR (dB)', fontsize=10)
-    axes[1].legend(title='Beta')
-
-    sns.barplot(
-        data=df_plot, x='Modality', y='SSIM', hue='Beta_Label',
-        order=modality_order, ax=axes[2], palette='Greens',
-        errorbar=('ci', 95), capsize=.1
-    )
-    axes[2].set_title('Similaridade Estrutural (SSIM)\nMais próximo de 1.0 é melhor', fontsize=11, fontweight='bold')
-    axes[2].set_xlabel('Modalidade', fontsize=10)
-    axes[2].set_ylabel('SSIM', fontsize=10)
-    axes[2].set_ylim(0.95, 1.001)
-    axes[2].legend(title='Beta')
-
-    # 6. Ajustes Finais
-    plt.suptitle('Impacto do Parâmetro Beta na Qualidade da Imagem Portadora', fontsize=16, y=1.03)
-    plt.tight_layout(pad=2.0)
-    
-    # 7. Salvar
-    output_filename = 'graficos_qualidade_stego.png'
-    plt.savefig(output_filename, bbox_inches='tight', dpi=300)
-    print(f"\nSucesso! Gráfico salvo como: {output_filename}")
-    plt.show()
-
+    print(f"Salvo: {output_filename}")
 
 if __name__ == "__main__":
-    plot_bpp_cr_comparison()
-    plot_encoding_speed()
-    plot_decoding_speed()
-    plot_quality_by_beta()
+    df = load_data()
+    if df is not None:
+        plot_efficiency(df)
+        plot_performance(df)
+        plot_quality_tradeoff(df)
+        plot_ssim_combined(df)
+        plot_psnr_ssim_stego(df)
+
+        print("\nTodos os gráficos foram atualizados!")

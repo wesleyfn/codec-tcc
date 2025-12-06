@@ -17,9 +17,8 @@ from pydicom.dataset import FileDataset, FileMetaDataset
 from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 from skimage.metrics import peak_signal_noise_ratio as psnr, structural_similarity as ssim, mean_squared_error as mse
 
-# =============================================================================
-# CONFIGURAÇÃO DE LOG & PARÂMETROS GLOBAIS
-# =============================================================================
+# --- Configuração de Logging e Parâmetros Globais ---
+
 class CleanFormatter(logging.Formatter):
     def format(self, record):
         return f"{record.msg}"
@@ -31,7 +30,7 @@ logging.root.addHandler(handler)
 logging.root.setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- PARÂMETROS GLOBAIS DE EXPERIMENTO ---
+# Parâmetros do experimento
 DATASET_DIR = 'images/'
 OUTPUT_DIR = 'tcc_results/'
 CODECS_TO_TEST = ['jxl', 'j2k', 'jls']
@@ -40,14 +39,11 @@ BLOCK_SIZE = 4
 TARGET_PERCENTILE = 90 
 TARGET_BIT_DEPTH = 16
 
-# --- CONSTANTES DE CÁLCULO ---
+# Constantes
 MS_PER_S = 1000
 BYTES_PER_MB = 1024 * 1024 
-# ----------------------------------------
 
-# =============================================================================
-# VISUAL DEBUGGING HELPERS
-# =============================================================================
+# --- Funções Auxiliares de Depuração Visual ---
 
 def save_visual_debug_image(data: np.ndarray, path: str, title: str = None, normalize: bool = True, cmap: str = 'gray', show_colorbar: bool = False, hline_pos: int = None, debug_mode: bool = True, side_by_side_img: np.ndarray = None, side_by_side_title: str = "Original"):
     if not debug_mode: return
@@ -56,7 +52,6 @@ def save_visual_debug_image(data: np.ndarray, path: str, title: str = None, norm
         fig, axes = plt.subplots(1, num_plots, figsize=(6 * num_plots, 6))
         if num_plots == 1: axes = [axes]
 
-        # Plot da imagem principal (data)
         ax1 = axes[0]
         
         if normalize and data.max() > data.min():
@@ -77,7 +72,6 @@ def save_visual_debug_image(data: np.ndarray, path: str, title: str = None, norm
         if title: ax1.set_title(title, fontsize=10, fontweight='bold')
         ax1.tick_params(labelsize=8)
 
-        # Plot da imagem lado a lado (se existir)
         if num_plots == 2:
             ax2 = axes[1]
             ax2.imshow(side_by_side_img, cmap='gray', interpolation='nearest')
@@ -145,27 +139,24 @@ def save_zoomed_comparison(original_img: np.ndarray, stego_img: np.ndarray, roi_
     if not debug_mode: return
     try:
         x, y, w, h = roi_coords
-        
-        # 1. Cortar as imagens na região de interesse
+
         original_crop = original_img[y:y+h, x:x+w]
         stego_crop = stego_img[y:y+h, x:x+w]
         
-        # 2. Calcular o resíduo
         residual = stego_img.astype(np.int32) - original_img.astype(np.int32)
         residual_crop = np.abs(residual[y:y+h, x:x+w])
         
-        # 3. Criar a figura com 3 subplots
         fig, axes = plt.subplots(1, 3, figsize=(15, 6))
         
-        # Painel A: Original
+        # Painel A: Original com zoom
         axes[0].imshow(original_crop, cmap='gray', interpolation='nearest')
         axes[0].set_title(f"(A) Original ({zoom_factor}00% Zoom)", fontweight='bold')
         
         # Painel B: Stego
         axes[1].imshow(stego_crop, cmap='gray', interpolation='nearest')
-        axes[1].set_title(f"(B) Stego ({zoom_factor}00% Zoom)", fontweight='bold')
+        axes[1].set_title(f"(B) Portadora ({zoom_factor}00% Zoom)", fontweight='bold')
         
-        # Painel C: Resíduo
+        # Painel C: Diferença (Resíduo)
         im = axes[2].imshow(residual_crop, cmap='inferno', interpolation='nearest')
         axes[2].set_title(f"(C) Diferença (Resíduo)", fontweight='bold')
         fig.colorbar(im, ax=axes[2], fraction=0.046, pad=0.04)
@@ -204,9 +195,7 @@ def save_histogram_debug(values: np.ndarray, threshold: float, path: str, title:
         logger.warning(f"    [!] Erro ao salvar histograma: {e}")
         return False
 
-# =============================================================================
-# DICOM UTILS & METRICS
-# =============================================================================
+# --- Utilitários DICOM e Métricas ---
 
 def serialize_dicom_value(value):
     if value is None: return None
@@ -325,9 +314,8 @@ def create_clean_dicom_dataset(image_array: np.ndarray) -> FileDataset:
     return ds
 
 def save_dicom_file(ds, path, debug_mode: bool = True):
-    ds.save_as(path, enforce_file_format=True)
-    if debug_mode:
-        logger.info(f"    - Saved DICOM: {os.path.basename(path)}")
+    ds.save_as(path, write_like_original=False)
+    logger.info(f"    - Saved DICOM: {os.path.basename(path)}")
 
 def get_image_info_for_exp(img_path):
     """Extrai informações básicas do arquivo DICOM para o loop de experimento."""
@@ -345,10 +333,7 @@ def get_image_info_for_exp(img_path):
     
     return original_size, modality, bits_stored, bits_allocated, shape
 
-
-# =============================================================================
-# COMPRESSION & CORE ALGORITHMS
-# =============================================================================
+# --- Algoritmos Principais e Compressão ---
 
 def compress_image_data(img: np.ndarray, codec: str) -> bytes:
     logger.info(f"  > Compressing ({codec.upper()})...")
@@ -357,7 +342,6 @@ def compress_image_data(img: np.ndarray, codec: str) -> bytes:
     if codec == 'jxl': data = imagecodecs.jpegxl_encode(img, numthreads=0, lossless=True, effort=5)
     elif codec == 'jls': data = imagecodecs.jpegls_encode(img)
     elif codec == 'j2k': data = imagecodecs.jpeg2k_encode(img, reversible=True, numthreads=0)
-    #elif codec == 'png': data = imagecodecs.png_encode(img)
     else: raise ValueError(f"Unknown codec: {codec}")
     
     logger.info(f"    - Size: {len(data)} bytes (Time: {time.time()-t0:.4f}s)")
@@ -367,7 +351,6 @@ def decompress_image_data(data, codec):
     if codec == 'jxl': return imagecodecs.jpegxl_decode(data, numthreads=0)
     elif codec == 'jls': return imagecodecs.jpegls_decode(data)
     elif codec == 'j2k': return imagecodecs.jpeg2k_decode(data, numthreads=0)
-    #elif codec == 'png': return imagecodecs.png_decode(data)
     else: raise ValueError(f"Unknown codec: {codec}")
 
 def convert_message_to_bits(msg: str) -> np.ndarray:
@@ -394,60 +377,94 @@ def reconstruct_from_bit_planes(planes: List[np.ndarray], dtype) -> np.ndarray:
         flat_out |= (plane.reshape(-1).astype(dtype) << b)
     return flat_out.reshape(h, w)
 
-def calculate_mutual_information(plane: np.ndarray, image: np.ndarray, hist_y: np.ndarray, bins: int, bits_stored: int) -> float:
-    """Calcula a informação mútua entre um plano de bits e a imagem, adaptando-se ao bits_stored."""
+def calculate_mutual_information(plane: np.ndarray, image: np.ndarray, hist_y: np.ndarray, bins: int, shift: int) -> float:
+    """
+    Calcula a informação mútua entre um plano de bits e a imagem.
+    Recebe 'shift' explicitamente para garantir que a quantização seja idêntica à do histograma global.
+    """
     X = plane.reshape(-1)
     Y = image.reshape(-1)
     total = Y.size
 
-    # Quantiza a imagem para 12 bits se a profundidade for maior que 8.
-    if bits_stored > 8:
-        shift = max(0, bits_stored - 8)
-        Y = (Y.astype(np.uint32) >> shift).astype(np.int64)
+    # Aplica a MESMA quantização usada para gerar hist_y na função principal
+    if shift > 0:
+        Y = (Y.astype(np.uint32) >> shift)
     else:
-        Y = Y.astype(np.int64)
+        Y = Y.astype(np.int32)
 
     ones = int(X.sum())
+    # Proteção contra plano vazio ou cheio
+    if ones == 0 or ones == total:
+        return 0.0
+
     p_x = np.array([total - ones, ones], dtype=np.float64) / total
+    
     mask1 = (X == 1)
     h1 = np.bincount(Y[mask1], minlength=bins)
     h0 = hist_y - h1
+    
+    # Stack para probabilidade conjunta
     p_joint = np.vstack([h0, h1]) / total
 
     def ent(p): 
         pnz = p[p > 0]
         return -np.sum(pnz * np.log2(pnz))
     
+    # I(X;Y) = H(X) + H(Y) - H(X,Y)
     return float(ent(p_x) + ent(hist_y/total) - ent(p_joint.ravel()))
 
 def adaptive_modality_decomposition(image: np.ndarray, beta: float, output_dir: str, base_name: str, bits_stored: int, debug_mode: bool = True):
     all_planes = extract_bit_planes(image)
     depth = len(all_planes)
     
-    # O cálculo do histograma deve ser consistente com a quantização em calculate_mutual_information
-    bins = 4096 if depth > 8 else 256
-    shift = max(0, bits_stored - 8) if bits_stored > 8 else 0
+    # Determina a profundidade de bits efetiva com base no valor máximo do pixel.
+    max_val = image.max()
+    if max_val > 0:
+        effective_bits = int(np.ceil(np.log2(float(max_val) + 1.0)))
+    else:
+        effective_bits = 8
+        
+    # Define a resolução do histograma para análise de entropia, evitando esparsidade.
+    TARGET_HIST_DEPTH = 10 
+    
+    if effective_bits > TARGET_HIST_DEPTH:
+        shift = effective_bits - TARGET_HIST_DEPTH
+        bins = 2**TARGET_HIST_DEPTH
+    else:
+        shift = 0
+        bins = 2**effective_bits
+        
+    bins = max(bins, 256)
+
     img_quantized = (image.astype(np.uint32) >> shift)
     hist = np.bincount(img_quantized.ravel(), minlength=bins).astype(np.float64)
+
+    # Calcula Entropia Total (Alvo)
     p = hist / hist.sum()
     total_H = -np.sum(p[p > 0] * np.log2(p[p > 0]))
     target_H = beta * total_H
 
     if debug_mode:
-        logger.info(f"  > Entropy Analysis:")
-        logger.info(f"    - H(x) Image: {total_H:.4f} bits (Max Depth: {bits_stored})")
+        logger.info(f"  > Entropy Analysis (Effective Bits: {effective_bits}):")
+        logger.info(f"    - Quantization: Shift={shift} | Bins={bins}")
+        logger.info(f"    - H(x) Image: {total_H:.4f} bits")
         logger.info(f"    - Target Cumulative MI (Beta={beta}): {target_H:.4f}")
 
     cum_mi = 0.0
-    s = depth
+    s = depth # Valor padrão seguro
     found_s = False
     
-    for i in range(bits_stored):
+    limit_scan = min(len(all_planes), bits_stored)
+
+    for i in range(limit_scan):
         plane = all_planes[i]
         
-        mi = calculate_mutual_information(plane, image, hist, bins, bits_stored)
+        mi = calculate_mutual_information(plane, image, hist, bins, shift)
+        
         cum_mi += mi
         status = ""
+        
+        # Lógica de parada
         if not found_s and cum_mi >= target_H:
             s = i + 1
             status = "  <-- CUTOFF POINT (s)"
@@ -456,7 +473,8 @@ def adaptive_modality_decomposition(image: np.ndarray, beta: float, output_dir: 
                 logger.info(f"    - Plane {i}: MI={mi:.5f} | Cumulative={cum_mi:.5f}{status}")
             break
     
-    s = min(s, bits_stored)
+    # Garante que o ponto de corte `s` esteja dentro de limites seguros.
+    s = min(s, effective_bits) 
     s = max(1, min(s, depth - 1))
     
     local = all_planes[:s]
@@ -466,21 +484,19 @@ def adaptive_modality_decomposition(image: np.ndarray, beta: float, output_dir: 
 
     return global_p, local, depth
 
+
 def create_capacity_map_lge(image: np.ndarray, block_size: int, target_percentile: float, output_dir: str, base_name: str, required_bits: int = None, debug_mode: bool = True):
     img = image.astype(np.int32)
     h, w = img.shape
     # LGE significa Local Gradient Energy
-
-    # 1. CÁLCULO VETORIZADO DO LGE
     dh = np.abs(img[:, 1:] - img[:, :-1])
     dh = np.pad(dh, ((0,0),(0,1)))
 
     dv = np.abs(img[1:, :] - img[:-1, :])
     dv = np.pad(dv, ((0,1),(0,0)))
-    
     lge = dh + dv
     
-    # 2. MÉDIA POR BLOCOS
+    # Calcula a energia média por blocos.
     h_pad = (block_size - h % block_size) % block_size
     w_pad = (block_size - w % block_size) % block_size
     lge_padded = np.pad(lge, ((0,h_pad), (0,w_pad)), mode='edge')
@@ -488,24 +504,20 @@ def create_capacity_map_lge(image: np.ndarray, block_size: int, target_percentil
     bh, bw = lge_padded.shape[0] // block_size, lge_padded.shape[1] // block_size
     blocks = lge_padded.reshape(bh, block_size, bw, block_size).transpose(0, 2, 1, 3)
     block_energy = blocks.mean(axis=(2,3))
-    
-    # 3. THRESHOLDING
+
+    # Define o limiar de energia com base no percentil alvo.
     flat = block_energy.ravel()
     calculated_threshold = np.percentile(flat, target_percentile)
     
     if debug_mode:
-        p50, p75 = np.percentile(flat, [50, 75])
-        logger.info(f"  > LGE Stats: P50={p50:.1f} | P75={p75:.1f} | Cutoff={calculated_threshold:.1f}")
+        logger.info(f"  > LGE Stats: Cutoff={calculated_threshold:.1f} (P{target_percentile})")
         save_histogram_debug(flat, calculated_threshold, os.path.join(output_dir, f"{base_name}_debug_energy_hist.png"), 
                              f"LGE Distribution", "Energy", debug_mode=debug_mode)
 
-    # 4. MÁSCARA E LISTA DE PIXELS
+    # Gera o mapa de capacidade e a lista de pixels permitidos.
     mask = block_energy >= calculated_threshold
-    
-    # Expande a máscara de blocos para máscara de pixels
     capacity_map_full = np.kron(mask, np.ones((block_size, block_size), dtype=np.uint8))[:h, :w]
     
-    # Lista completa de todos os pixels onde poderíamos esconder dados
     allowed_full = np.where(capacity_map_full.ravel() == 1)[0].astype(np.int64)
     
     total_capacity = len(allowed_full)
@@ -536,26 +548,19 @@ def embed_message_in_planes(planes, msg_bits, allowed):
     n_planes = len(planes)
     total_msg_bits = len(msg_bits)
 
-    # Calculate quadratic weights: higher weights for lower bit planes (more significant)
-    # Weights are (n_planes - 1 - i)^2 + 1 to ensure positive weights and decreasing importance
+    # Distribui os bits da mensagem nos planos de forma ponderada (quadrática).
+    # Planos de bits menos significativos (iniciais) recebem mais dados.
     weights = [(n_planes - 1 - i)**2 + 1 for i in range(n_planes)]
     total_weight = sum(weights)
 
-    # Calculate ideal float distribution
     seg_lens_float = [total_msg_bits * w / total_weight for w in weights]
-    
-    # Initialize integer segments by taking floor
     seg_lens = [int(s) for s in seg_lens_float]
     
-    # Calculate remaining bits to distribute
+    # Distribui os bits restantes (arredondamento) para os primeiros planos.
     remaining_bits = total_msg_bits - sum(seg_lens)
-    
-    # Distribute remaining bits to the first 'remaining_bits' planes
-    # This ensures the sum is exactly total_msg_bits and maintains the bias towards earlier planes
     for i in range(remaining_bits):
         seg_lens[i] += 1
-    
-    # Ensure no segment is negative (should not happen with this logic if total_msg_bits >= 0)
+
     seg_lens = [max(0, s) for s in seg_lens]
     
     logger.info(f"  > Embedding Distribution:")
@@ -608,10 +613,7 @@ def save_container(path, codec, s, w, h, bs, depth, lens, img_bytes, bmp_bytes):
         f.write(bmp_bytes)
     return os.path.getsize(path)
 
-# =============================================================================
-# PIPELINE CONTROL (MODO EXPERIMENTO E SINGLE TEST)
-# =============================================================================
-
+# --- Pipelines de Codificação e Decodificação ---
 
 def run_encoder(dicom_path, out_dir, beta, b_size, initial_percentile, codec, message_override=None, debug_mode: bool = False):
     t_start = time.time()
@@ -621,12 +623,10 @@ def run_encoder(dicom_path, out_dir, beta, b_size, initial_percentile, codec, me
         logger.info("STARTING ENCODER (ADAPTIVE MODE)")
         logger.info(f"File: {os.path.basename(dicom_path)}")
     
-    # [1] LOAD
     ds = pydicom.dcmread(dicom_path)
     img = ds.pixel_array
     bits_stored = getattr(ds, 'BitsStored', img.dtype.itemsize * 8)
     
-    # Prepara nome base e metadados
     try:
         modality = os.path.basename(os.path.dirname(dicom_path))
     except:
@@ -640,16 +640,14 @@ def run_encoder(dicom_path, out_dir, beta, b_size, initial_percentile, codec, me
         meta_str = extract_dicom_metadata(ds)
     bits = convert_message_to_bits(meta_str)
 
-    # [2] DECOMPOSITION (Feito uma vez, pois não depende do percentil)
+    # Decomposição da imagem em planos de bits globais e locais.
     temp_base_name = f"{fname}_{modality}_b{beta}_{codec}"
     glo, loc, depth = adaptive_modality_decomposition(img, beta, out_dir, temp_base_name, bits_stored=bits_stored, debug_mode=debug_mode)
 
-    # [3] LOOP ADAPTATIVO DE CAPACIDADE
+    # Loop adaptativo para encontrar o percentil de energia mínimo que oferece capacidade suficiente.
     current_percentile = initial_percentile
     min_percentile = 50 # Abaixo disso a qualidade visual degrada muito
     success = False
-    
-    # Variáveis para o loop
     c_map, allowed, stego_loc, lens, used, flips = None, None, None, None, None, None
     
     while current_percentile >= min_percentile:
@@ -660,7 +658,6 @@ def run_encoder(dicom_path, out_dir, beta, b_size, initial_percentile, codec, me
             required_bits=len(bits), debug_mode=debug_mode
         )
         
-        # Verifica se cabe
         if len(bits) <= len(allowed):
             success = True
             if debug_mode: logger.info(f"    -> Success! Found capacity at P{current_percentile}")
@@ -673,20 +670,17 @@ def run_encoder(dicom_path, out_dir, beta, b_size, initial_percentile, codec, me
         logger.error(f"Encoding FAILED: Message too big even at P{min_percentile}.")
         return None, None, 0.0, None
 
-    # [4] EMBED (Agora com o percentil garantido)
+    # Embutimento da mensagem com o percentil de capacidade garantido.
     base_name_full = f"{fname}_{modality}_b{beta}_p{current_percentile}_{codec}" # Nome final com o P correto
     
     stego_loc, lens, used, flips = embed_message_in_planes(loc, bits, allowed)
     stego_img = reconstruct_from_bit_planes(stego_loc + glo, img.dtype)
     
-    # (Opcional) Recriar os debugs visuais finais com o nome correto e o percentil vencedor
     if debug_mode:
         diff = stego_img.astype(np.int32) - img.astype(np.int32)
         save_visual_debug_image(np.abs(diff), os.path.join(out_dir, f"{base_name_full}_debug_residuals.png"), title=f"Residuals (Final P{current_percentile})", cmap='inferno', show_colorbar=True, debug_mode=True)
         
-        # Adiciona a chamada para a nova função de zoom
-        # ROI (x, y, width, height) - Escolhi uma área que geralmente tem bordas em CTs de tórax.
-        roi_of_interest = (200, 250, 64, 64) 
+        roi_of_interest = (200, 300, 64, 64) 
         save_zoomed_comparison(img, stego_img, roi_of_interest, os.path.join(out_dir, f"{base_name_full}_debug_zoom_comparison.png"), zoom_factor=4, debug_mode=True)
 
     # [5] PACKAGE
@@ -703,7 +697,6 @@ def run_encoder(dicom_path, out_dir, beta, b_size, initial_percentile, codec, me
     bmp_bin = pack_bitmap(used, flips)
     
     bin_path = os.path.join(out_dir, f"{base_name_full}.bin")
-    # Salva usando o percentil vencedor no metadata (embora não vá no header binário, é bom saber)
     sz = save_container(bin_path, codec, len(loc), img.shape[1], img.shape[0], b_size, depth, lens, img_bin, bmp_bin)
     
     if debug_mode:
@@ -720,10 +713,9 @@ def run_decoder(bin_path, out_dir, debug_mode: bool = False):
     t_start = time.time()
     
     if debug_mode:
-        print("\n" + "="*60)
+        logger.info("\n" + "="*60)
         logger.info("STARTING DECODER PROCESS (DEBUG MODE)")
         logger.info(f"Input File: {os.path.basename(bin_path)}")
-        print("-" * 60)
     else:
         logger.info(f"Decoding {os.path.basename(bin_path)}...")
 
@@ -798,7 +790,7 @@ def run_decoder(bin_path, out_dir, debug_mode: bool = False):
 
         ds = create_clean_dicom_dataset(full_img)
         ds = restore_dicom_metadata(ds, msg_str)
-        save_dicom_file(ds, os.path.join(out_dir, f"{base}_restored.dcm"), debug_mode=debug_mode)
+        save_dicom_file(ds, os.path.join(out_dir, f"{base}_restored.dcm"))
     
     total_t = time.time() - t_start
     if not debug_mode:
@@ -809,8 +801,6 @@ def run_decoder(bin_path, out_dir, debug_mode: bool = False):
 def process_single_image(img_path, output_dir, codes, betas, block_size, percentile, target_bit_depth, debug_mode):
     """Executa o processamento com NORMALIZAÇÃO [0-1] para gerar MSE compatível com a literatura."""
     results = []
-    
-    # 1. Carregar imagem original
     try:
         logger.info(f"--- Processando: {os.path.basename(img_path)} ---")
         
@@ -829,7 +819,6 @@ def process_single_image(img_path, output_dir, codes, betas, block_size, percent
         logger.error(f"Erro ao carregar {img_path}: {e}")
         return []
 
-    # 2. Loop de Testes
     for beta in betas:
         for codec_name in codes:
             try:
@@ -845,16 +834,13 @@ def process_single_image(img_path, output_dir, codes, betas, block_size, percent
                     bin_file_result, output_dir, debug_mode=debug_mode 
                 )
                 
-                # === NORMALIZAÇÃO (O SEGREDO PARA MSE BAIXO) ===
-                # Converte para float e normaliza entre 0.0 e 1.0, igual ao metrics.py
-                
-                # 1. Prepara Original
+                # Normalização para float [0.0, 1.0] para cálculo de métricas.
+                # Isso garante a comparabilidade com a literatura.
                 orig_float = original_array.astype(np.float64)
                 orig_norm = orig_float - orig_float.min()
                 if orig_norm.max() > 0:
                     orig_norm /= orig_norm.max()
                 
-                # 2. Prepara Stego (com correção de view se necessário)
                 if original_array.dtype == np.int16 and stego_array.dtype == np.uint16:
                     stego_float = stego_array.view(np.int16).astype(np.float64)
                 else:
@@ -864,7 +850,6 @@ def process_single_image(img_path, output_dir, codes, betas, block_size, percent
                 if stego_norm.max() > 0:
                     stego_norm /= stego_norm.max()
 
-                # 3. Prepara Restaurada
                 if original_array.dtype == np.int16 and restored_image.dtype == np.uint16:
                     rest_float = restored_image.view(np.int16).astype(np.float64)
                 else:
@@ -874,16 +859,12 @@ def process_single_image(img_path, output_dir, codes, betas, block_size, percent
                 if rest_norm.max() > 0:
                     rest_norm /= rest_norm.max()
 
-                # -----------------------------------------------
-
-                # C. Métricas (Agora calculadas sobre os valores 0.0-1.0)
+                # Cálculo de métricas de qualidade e performance.
                 stego_mse = mse(orig_norm, stego_norm)
                 stego_psnr = psnr(orig_norm, stego_norm, data_range=1.0)
                 stego_ssim = ssim(orig_norm, stego_norm, data_range=1.0, channel_axis=None)
-                
-                restored_mse = mse(orig_norm, rest_norm) # Deve ser 0.0
-                
-                # Performance
+                restored_mse = mse(orig_norm, rest_norm)
+
                 final_bin_size = os.path.getsize(bin_file_result)
                 shape_size = shape[0] * shape[1]
                 bpp = (final_bin_size * 8) / shape_size
@@ -893,8 +874,7 @@ def process_single_image(img_path, output_dir, codes, betas, block_size, percent
                 encoding_speed_ms_mb = (total_encoding_time * MS_PER_S) / original_size_mb if original_size_mb > 0 else 0
                 decoding_speed_ms_mb = (decoding_time * MS_PER_S) / original_size_mb if original_size_mb > 0 else 0
                 
-                # Reversibilidade Binária (nos dados brutos originais)
-                # Aqui usamos os dados crus para garantir bit-perfect
+                # Verificação de reversibilidade (bit-a-bit).
                 arr_rest_view = restored_image
                 if original_array.dtype == np.int16 and restored_image.dtype == np.uint16:
                     arr_rest_view = restored_image.view(np.int16)
@@ -975,27 +955,17 @@ def run_full_experiment_mode(output_dir, dataset_dir, codes, betas, block_size, 
         logger.info(f"Resultados salvos em: {csv_path}")
         logger.info(f"{'='*50}")
     else:
-        logger.error("Nenhum resultado foi gerado!")
+        logger.error("Nenhum resultado foi gerado durante os experimentos.")
 
-### Bloco Principal de Controle de Execução
+# --- Bloco Principal de Execução ---
 if __name__ == "__main__":
     
-    MODE = 'EXPERIMENT' # Opções: 'EXPERIMENT' ou 'SINGLE_TEST'
-    
-    SINGLE_TEST_FILE = "images/CT/003.dcm"
-    SINGLE_TEST_CODEC = 'jxl'
-    
-    if MODE == 'EXPERIMENT':
-        run_full_experiment_mode(OUTPUT_DIR, DATASET_DIR, CODECS_TO_TEST, BETAS_TO_TEST, BLOCK_SIZE, TARGET_PERCENTILE, TARGET_BIT_DEPTH, debug_mode=False)
-        
-    elif MODE == 'SINGLE_TEST':
-        if os.path.exists(SINGLE_TEST_FILE):
-            # Executa o encoder e depois o decoder para um teste de ponta a ponta
-            bin_file_path, _, _, _ = run_encoder(
-                SINGLE_TEST_FILE, OUTPUT_DIR, BETAS_TO_TEST[0], BLOCK_SIZE, TARGET_PERCENTILE, SINGLE_TEST_CODEC, debug_mode=True
-            )
-            if bin_file_path:
-                run_decoder(bin_file_path, OUTPUT_DIR, debug_mode=True)
+    # O modo padrão é 'EXPERIMENT', que executa a análise em todo o dataset.
+    # Para depurar um único arquivo, descomente o bloco 'SINGLE_TEST'.
+    MODE = 'EXPERIMENT'
 
-        else:
-            logger.error(f"Arquivo de teste único não encontrado: {SINGLE_TEST_FILE}")
+    if MODE == 'EXPERIMENT':
+        run_full_experiment_mode(
+            OUTPUT_DIR, DATASET_DIR, CODECS_TO_TEST, BETAS_TO_TEST, 
+            BLOCK_SIZE, TARGET_PERCENTILE, TARGET_BIT_DEPTH, debug_mode=False
+        )

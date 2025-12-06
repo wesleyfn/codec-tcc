@@ -88,58 +88,41 @@ def run_beta_analysis():
     plot_results(df)
 
 def plot_results(df):
-    # Configuração do Plot (3 subplots, um para cada modalidade)
-    modalities = df['Modality_Label'].unique()
-    fig, axes = plt.subplots(1, len(modalities), figsize=(15, 6), sharey='row')
-    
-    if len(modalities) == 1: axes = [axes] # Garante que seja lista se for só 1
+    """Plota os resultados de PSNR vs. Beta para todas as modalidades em um único gráfico."""
+    fig, ax = plt.subplots(figsize=(12, 7))
 
     print("\n> Gerando gráfico...")
 
-    for i, mod in enumerate(modalities):
-        ax1 = axes[i]
+    # Define um ciclo de cores para as modalidades
+    modality_colors = {
+        'CT': '#1f77b4',  # Azul
+        'DX': '#ff7f0e',  # Laranja
+        'MG': '#2ca02c'   # Verde
+    }
+
+    for mod in df['Modality_Label'].unique():
         subset = df[df['Modality_Label'] == mod].sort_values('Beta')
+        color = modality_colors[mod]
         
-        # Eixo Y1: PSNR (Qualidade)
-        color_psnr = 'tab:blue'
-        l1 = ax1.plot(subset['Beta'], subset['PSNR_dB'], 
-                 marker='o', color=color_psnr, label='PSNR (dB)', linewidth=2)
-        ax1.set_xlabel('Parâmetro Beta (β)', fontsize=12)
-        ax1.set_ylabel('PSNR (dB)', color=color_psnr, fontsize=12)
-        ax1.tick_params(axis='y', labelcolor=color_psnr)
-        ax1.grid(True, linestyle='--', alpha=0.3)
-        ax1.set_title(f"Modalidade: {mod}", fontweight='bold')
-        
-        # Eixo Y2: Taxa de Compressão ou BPP (Eficiência/Capacidade)
-        # Como o BPP varia com o Beta (mais dados escondidos = maior entropia no arquivo final),
-        # usamos a Taxa de Compressão (CR) inversa ou o tamanho do arquivo.
-        # Aqui usaremos Bpp (Bits per Pixel) do arquivo final.
-        # Quanto MAIOR o Bpp, mais informação (ruído/mensagem) foi preservada.
-        
-        ax2 = ax1.twinx()
-        color_bpp = 'tab:red'
-        l2 = ax2.plot(subset['Beta'], subset['Bpp'], 
-                 marker='s', linestyle='--', color=color_bpp, label='Bpp (Final)', alpha=0.7)
-        
-        if i == len(modalities) - 1: # Rotulo apenas no último para não poluir
-            ax2.set_ylabel('Bits por Pixel (Bpp)', color=color_bpp, fontsize=12)
-        ax2.tick_params(axis='y', labelcolor=color_bpp)
+        # Plota a linha para a modalidade atual
+        ax.plot(subset['Beta'], subset['PSNR_dB'], 
+                marker='o', color=color, label=mod, linewidth=2)
 
-        # --- ANOTAÇÕES E DESTAQUES ---
-        # Destacar o Beta que dá o melhor equilíbrio (Ex: PSNR > 50 e Max Bpp)
-        # Lógica simples: Beta onde o PSNR cai abaixo de um limiar crítico (ex: 60dB)
-        # ou onde o Bpp estabiliza.
-        
-        # Anotação de valores no gráfico
-        for x, y_psnr, y_bpp in zip(subset['Beta'], subset['PSNR_dB'], subset['Bpp']):
-            if x in [0.2, 0.5, 0.8]: # Anota apenas alguns pontos chave para não poluir
-                ax1.annotate(f"{y_psnr:.1f}dB", (x, y_psnr), textcoords="offset points", xytext=(0,10), ha='center', color=color_psnr, fontsize=8)
-                ax2.annotate(f"{y_bpp:.1f}", (x, y_bpp), textcoords="offset points", xytext=(0,-15), ha='center', color=color_bpp, fontsize=8)
+        # Anotação de valores em pontos chave
+        for x, y_psnr in zip(subset['Beta'], subset['PSNR_dB']):
+            if x in [0.2, 0.5, 0.8]:
+                ax.annotate(f"{y_psnr:.1f}", (x, y_psnr), textcoords="offset points", xytext=(0,10), ha='center', color=color, fontsize=8, weight='bold')
 
-    plt.suptitle(f"Análise de Sensibilidade do Beta: PSNR vs. Bpp (Codec: {CODEC_FIXED.upper()})", fontsize=16)
+    ax.set_xlabel('Parâmetro Beta (β)', fontsize=12)
+    ax.set_ylabel('PSNR (dB)', fontsize=12)
+    ax.grid(True, linestyle='--', alpha=0.5)
+    ax.legend(title='Modalidade', loc='lower right')
+    plt.suptitle(f"Análise de Sensibilidade do Beta (Codec: {CODEC_FIXED.upper()})", fontsize=16, y=0.96)
     plt.tight_layout()
     plt.savefig(OUTPUT_PLOT)
     print(f"Gráfico salvo como: {OUTPUT_PLOT}")
+
+    
 
 if __name__ == "__main__":
     # Suprime avisos de bibliotecas de imagem
