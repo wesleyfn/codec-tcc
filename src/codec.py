@@ -962,10 +962,14 @@ if __name__ == "__main__":
     
     # O modo padrão é 'EXPERIMENT', que executa a análise em todo o dataset.
     # Para depurar um único arquivo, descomente o bloco 'SINGLE_TEST'.
-    MODE = 'EXPERIMENT'
+    MODE = 'SINGLE_TEST'
 
     if MODE == 'EXPERIMENT':
         run_full_experiment_mode(
             OUTPUT_DIR, DATASET_DIR, CODECS_TO_TEST, BETAS_TO_TEST, 
             BLOCK_SIZE, TARGET_PERCENTILE, TARGET_BIT_DEPTH, debug_mode=False
+        )
+    else:
+        process_single_image(
+            "images/CT/003.dcm", OUTPUT_DIR, CODECS_TO_TEST, BETAS_TO_TEST, BLOCK_SIZE, TARGET_PERCENTILE, TARGET_BIT_DEPTH, debug_mode=True
         )
